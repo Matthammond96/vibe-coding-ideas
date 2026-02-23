@@ -30,34 +30,35 @@ case "$ARCH" in
         ;;
 esac
 
+# Separate build artifacts from runtime images
+BUILD_DIR="build/$ARCH"
 OUTPUT_DIR="images/$ARCH"
-MODULES_DIR="modules-$ARCH"
 
 echo "=== Building $ARCH Alpine VM Image ==="
 
-mkdir -p "$OUTPUT_DIR"
+mkdir -p "$BUILD_DIR" "$OUTPUT_DIR"
 
-# Download kernel (if not exists)
+# Download kernel to runtime dir (needed at runtime)
 if [ ! -f "$OUTPUT_DIR/vmlinuz" ]; then
     echo "Downloading $ARCH kernel..."
     wget -q "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/netboot/vmlinuz-virt" \
         -O "$OUTPUT_DIR/vmlinuz"
 fi
 
-# Download modules (if not exists)
-if [ ! -f "$OUTPUT_DIR/modloop-virt" ]; then
+# Download modloop to build dir (only needed for module extraction)
+if [ ! -f "$BUILD_DIR/modloop-virt" ]; then
     echo "Downloading $ARCH modules..."
     wget -q "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/${ALPINE_ARCH}/netboot/modloop-virt" \
-        -O "$OUTPUT_DIR/modloop-virt"
+        -O "$BUILD_DIR/modloop-virt"
 fi
 
-# Extract modules (using Docker for cross-platform compatibility)
-if [ ! -d "$MODULES_DIR" ]; then
+# Extract modules to build dir (using Docker for cross-platform compatibility)
+if [ ! -d "$BUILD_DIR/modules" ]; then
     echo "Extracting $ARCH kernel modules..."
-    mkdir -p "$MODULES_DIR"
+    mkdir -p "$BUILD_DIR/modules"
     docker run --rm --platform "$DOCKER_PLATFORM" \
-        -v "$(pwd)/$OUTPUT_DIR/modloop-virt:/modloop.squashfs:ro" \
-        -v "$(pwd)/$MODULES_DIR:/output" \
+        -v "$(pwd)/$BUILD_DIR/modloop-virt:/modloop.squashfs:ro" \
+        -v "$(pwd)/$BUILD_DIR/modules:/output" \
         alpine:latest sh -c '
             apk add --no-cache squashfs-tools > /dev/null 2>&1
             cd /output
@@ -73,17 +74,17 @@ echo "Building $ARCH container image..."
 docker buildx build --platform "$DOCKER_PLATFORM" --build-arg TARGETPLATFORM="$DOCKER_PLATFORM" \
     -t "vibecodes/host-vm:$ARCH" --load .
 
-# Export filesystem
+# Export filesystem to build dir
 docker rm -f "temp-$ARCH" 2>/dev/null || true
 docker create --platform "$DOCKER_PLATFORM" --name "temp-$ARCH" "vibecodes/host-vm:$ARCH"
-docker export "temp-$ARCH" -o "$OUTPUT_DIR/rootfs.tar"
+docker export "temp-$ARCH" -o "$BUILD_DIR/rootfs.tar"
 docker rm "temp-$ARCH"
 
-# Create initramfs
+# Create initramfs (output to runtime dir)
 echo "Creating $ARCH initramfs..."
 docker run --rm --platform "$DOCKER_PLATFORM" \
-    -v "$(pwd)/$OUTPUT_DIR/rootfs.tar:/rootfs.tar:ro" \
-    -v "$(pwd)/$MODULES_DIR:/modules:ro" \
+    -v "$(pwd)/$BUILD_DIR/rootfs.tar:/rootfs.tar:ro" \
+    -v "$(pwd)/$BUILD_DIR/modules:/modules:ro" \
     -v "$(pwd)/$OUTPUT_DIR:/output" \
     alpine:latest sh -c '
         cd /tmp
@@ -104,8 +105,10 @@ docker run --rm --platform "$DOCKER_PLATFORM" \
         find . | cpio -o -H newc 2>/dev/null | gzip > /output/rootfs.cpio.gz
     '
 
-# Clean up intermediate files
-rm -f "$OUTPUT_DIR/rootfs.tar"
-
 echo "=== $ARCH build complete ==="
-ls -lh "$OUTPUT_DIR/rootfs.cpio.gz"
+echo ""
+echo "Runtime images (needed for VM):"
+ls -lh "$OUTPUT_DIR/"
+echo ""
+echo "Build artifacts (can be cleaned with: rm -rf build/):"
+du -sh "$BUILD_DIR"

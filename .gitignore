@@ -50,5 +50,6 @@ next-env.d.ts
 mcp-server/dist
 mcp-server/node_modules
 
+# VM artifacts
 /vm/images
-/vm/modules*
+/vm/build
