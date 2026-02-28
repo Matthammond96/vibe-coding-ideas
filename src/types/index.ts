@@ -55,6 +55,7 @@ export type BoardChecklistItem = Database["public"]["Tables"]["board_checklist_i
 export type BoardTaskActivity = Database["public"]["Tables"]["board_task_activity"]["Row"];
 export type BoardTaskComment = Database["public"]["Tables"]["board_task_comments"]["Row"];
 export type BoardTaskAttachment = Database["public"]["Tables"]["board_task_attachments"]["Row"];
+export type IdeaAttachment = Database["public"]["Tables"]["idea_attachments"]["Row"];
 export type BotProfile = Database["public"]["Tables"]["bot_profiles"]["Row"];
 export type BoardTaskWithAssignee = BoardTask & {
   assignee: User | null;
@@ -91,14 +92,33 @@ export type DashboardBot = BotProfile & {
   isActiveMcpBot: boolean;
 };
 
+// Discussion types
+export type IdeaDiscussion = Database["public"]["Tables"]["idea_discussions"]["Row"];
+export type IdeaDiscussionReply = Database["public"]["Tables"]["idea_discussion_replies"]["Row"];
+export type DiscussionVote = Database["public"]["Tables"]["discussion_votes"]["Row"];
+export type DiscussionStatus = Database["public"]["Enums"]["discussion_status"];
+export type IdeaDiscussionWithAuthor = IdeaDiscussion & {
+  author: User;
+};
+export type IdeaDiscussionReplyWithAuthor = IdeaDiscussionReply & {
+  author: User;
+};
+export type IdeaDiscussionReplyWithChildren = IdeaDiscussionReplyWithAuthor & {
+  children: IdeaDiscussionReplyWithAuthor[];
+};
+export type IdeaDiscussionDetail = IdeaDiscussion & {
+  author: User;
+  replies: IdeaDiscussionReplyWithAuthor[];
+};
+
 // AI usage types
 export type AiUsageLog = Database["public"]["Tables"]["ai_usage_log"]["Row"];
 
-export type AiCredits = {
-  used: number;
-  limit: number | null;
-  remaining: number | null;
-  isByok: boolean;
+// Collaboration request types
+export type CollaborationRequest = Database["public"]["Tables"]["collaboration_requests"]["Row"];
+export type CollaborationRequestStatus = Database["public"]["Enums"]["collaboration_request_status"];
+export type CollaborationRequestWithRequester = CollaborationRequest & {
+  requester: User;
 };
 
 // Sort options

@@ -1,23 +1,26 @@
 "use client";
 
 import { useState } from "react";
+import dynamic from "next/dynamic";
 import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
-  TooltipTrigger,
   TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { EnhanceIdeaDialog } from "./enhance-idea-dialog";
-import type { BotProfile, AiCredits } from "@/types";
+import type { BotProfile } from "@/types";
+
+const EnhanceIdeaDialog = dynamic(() => import("./enhance-idea-dialog").then((m) => m.EnhanceIdeaDialog), { ssr: false });
 
 interface EnhanceIdeaButtonProps {
   ideaId: string;
   ideaTitle: string;
   currentDescription: string;
   bots: BotProfile[];
-  aiCredits?: AiCredits | null;
   variant?: "button" | "dropdown";
+  disabled?: boolean;
 }
 
 export function EnhanceIdeaButton({
@@ -25,57 +28,57 @@ export function EnhanceIdeaButton({
   ideaTitle,
   currentDescription,
   bots,
-  aiCredits,
   variant = "button",
+  disabled = false,
 }: EnhanceIdeaButtonProps) {
   const [open, setOpen] = useState(false);
 
-  const exhausted = !aiCredits?.isByok && aiCredits?.remaining === 0;
-
-  const button = variant === "dropdown" ? (
-    <button
-      className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
-      onClick={() => setOpen(true)}
-      disabled={exhausted}
-    >
-      <Sparkles className="h-4 w-4" />
-      Enhance with AI
-      {aiCredits && !aiCredits.isByok && aiCredits.remaining !== null && (
-        <span className="text-[10px] text-muted-foreground">
-          {aiCredits.remaining}/{aiCredits.limit}
-        </span>
-      )}
-    </button>
-  ) : (
-    <Button
-      variant="outline"
-      size="sm"
-      className="gap-2"
-      onClick={() => setOpen(true)}
-      disabled={exhausted}
-    >
-      <Sparkles className="h-4 w-4" />
-      Enhance with AI
-      {aiCredits && !aiCredits.isByok && aiCredits.remaining !== null && (
-        <span className="text-[10px] text-muted-foreground">
-          {aiCredits.remaining}/{aiCredits.limit}
-        </span>
-      )}
-    </Button>
-  );
+  if (variant === "dropdown") {
+    return (
+      <>
+        <button
+          className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent ${disabled ? "opacity-50" : ""}`}
+          onClick={() => !disabled && setOpen(true)}
+        >
+          <Sparkles className="h-4 w-4" />
+          Enhance with AI
+        </button>
+        <EnhanceIdeaDialog
+          open={open}
+          onOpenChange={setOpen}
+          ideaId={ideaId}
+          ideaTitle={ideaTitle}
+          currentDescription={currentDescription}
+          bots={bots}
+        />
+      </>
+    );
+  }
 
   return (
     <>
-      {exhausted ? (
+      <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
-            <span tabIndex={0}>{button}</span>
+            <span tabIndex={disabled ? 0 : undefined}>
+              <Button
+                variant="outline"
+                size="sm"
+                className={`gap-2 ${disabled ? "pointer-events-none opacity-50" : ""}`}
+                onClick={() => !disabled && setOpen(true)}
+              >
+                <Sparkles className="h-4 w-4" />
+                Enhance with AI
+              </Button>
+            </span>
           </TooltipTrigger>
-          <TooltipContent>Daily limit reached</TooltipContent>
+          {disabled && (
+            <TooltipContent side="bottom">
+              Add your API key in profile settings to enable AI
+            </TooltipContent>
+          )}
         </Tooltip>
-      ) : (
-        button
-      )}
+      </TooltipProvider>
       <EnhanceIdeaDialog
         open={open}
         onOpenChange={setOpen}
@@ -83,7 +86,6 @@ export function EnhanceIdeaButton({
         ideaTitle={ideaTitle}
         currentDescription={currentDescription}
         bots={bots}
-        aiCredits={aiCredits}
       />
     </>
   );

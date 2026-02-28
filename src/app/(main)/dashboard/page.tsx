@@ -1,23 +1,23 @@
 import type React from "react";
-import { redirect } from "next/navigation";
+import type { Metadata } from "next";
 import Link from "next/link";
 import {
   ArrowRight,
   Bell,
   Bot,
-  BookOpen,
   CheckSquare,
   LayoutDashboard,
   Lightbulb,
   Plus,
-  Rss,
-  Sparkles,
   Users,
 } from "lucide-react";
-import { createClient } from "@/lib/supabase/server";
+import { requireAuth } from "@/lib/auth";
 import { getDueDateStatus } from "@/lib/utils";
 import { DEFAULT_PANEL_ORDER } from "@/lib/dashboard-order";
 import { StatsCards } from "@/components/dashboard/stats-cards";
+import { WelcomeExperience } from "@/components/dashboard/welcome-experience";
+import { OnboardingWrapper } from "@/components/onboarding/onboarding-wrapper";
+import { OnboardingChecklist } from "@/components/onboarding/onboarding-checklist";
 import { ActiveBoards } from "@/components/dashboard/active-boards";
 import type { ActiveBoard } from "@/components/dashboard/active-boards";
 import { MyBots } from "@/components/dashboard/my-bots";
@@ -38,17 +38,13 @@ import type {
   BotProfile,
 } from "@/types";
 
-export const metadata = {
-  title: "Dashboard - VibeCodes",
+export const metadata: Metadata = {
+  title: "Dashboard",
+  robots: { index: false, follow: false },
 };
 
 export default async function DashboardPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/login");
+  const { user, supabase } = await requireAuth();
 
   // Phase 1: Independent queries
   const [
@@ -61,7 +57,7 @@ export default async function DashboardPage() {
     notificationsResult,
     tasksResult,
     botProfilesResult,
-    currentUserResult,
+    userProfileResult,
   ] = await Promise.all([
     // My ideas (limit 5)
     supabase
@@ -118,10 +114,10 @@ export default async function DashboardPage() {
       .select("*")
       .eq("owner_id", user.id)
       .order("created_at"),
-    // Current user record (for active_bot_id)
+    // User profile for onboarding state
     supabase
       .from("users")
-      .select("active_bot_id")
+      .select("onboarding_completed_at, full_name, avatar_url, github_username")
       .eq("id", user.id)
       .maybeSingle(),
   ]);
@@ -144,8 +140,17 @@ export default async function DashboardPage() {
 
   // Bot profiles
   const botProfiles = (botProfilesResult.data ?? []) as BotProfile[];
-  const activeBotId = currentUserResult.data?.active_bot_id ?? null;
   const botUserIds = botProfiles.map((b) => b.id);
+
+  // User profile for onboarding
+  const userProfile = userProfileResult.data as {
+    onboarding_completed_at: string | null;
+    full_name: string | null;
+    avatar_url: string | null;
+    github_username: string | null;
+  } | null;
+  const onboardingCompleted = !!userProfile?.onboarding_completed_at;
+  const isNewUser = !onboardingCompleted && ideasCount === 0 && collaborationsCount === 0;
 
   // All idea IDs the user owns or collaborates on (for board queries)
   const myIdeaIds = (myIdeaIdsResult.data ?? []).map((i) => i.id);
@@ -252,13 +257,21 @@ export default async function DashboardPage() {
 
   // Assemble DashboardBot[] — sorted by latest activity (most recent first),
   // bots with no activity fall to the bottom sorted by creation date
+  const MCP_ACTIVE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+  const now = Date.now();
   const dashboardBots: DashboardBot[] = botProfiles
-    .map((bot) => ({
-      ...bot,
-      currentTask: botCurrentTask.get(bot.id) ?? null,
-      lastActivity: botLastActivity.get(bot.id) ?? null,
-      isActiveMcpBot: activeBotId === bot.id,
-    }))
+    .map((bot) => {
+      const lastActivity = botLastActivity.get(bot.id) ?? null;
+      const lastActivityAge = lastActivity
+        ? now - new Date(lastActivity.created_at).getTime()
+        : Infinity;
+      return {
+        ...bot,
+        currentTask: botCurrentTask.get(bot.id) ?? null,
+        lastActivity,
+        isActiveMcpBot: lastActivityAge < MCP_ACTIVE_THRESHOLD_MS,
+      };
+    })
     .sort((a, b) => {
       const aTime = a.lastActivity?.created_at;
       const bTime = b.lastActivity?.created_at;
@@ -391,7 +404,7 @@ export default async function DashboardPage() {
         headerRight={
           myIdeas.length > 0 ? (
             <Link
-              href="/feed?view=mine"
+              href="/ideas?view=mine"
               className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
               View all
@@ -435,7 +448,7 @@ export default async function DashboardPage() {
         headerRight={
           collabIdeas.length > 0 ? (
             <Link
-              href="/feed?view=collaborating"
+              href="/ideas?view=collaborating"
               className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
               View all
@@ -449,7 +462,7 @@ export default async function DashboardPage() {
             <p className="text-sm text-muted-foreground">
               Not collaborating on any ideas yet.
             </p>
-            <Link href="/feed">
+            <Link href="/ideas">
               <Button variant="outline" size="sm" className="mt-3">
                 Browse the feed
               </Button>
@@ -486,12 +499,12 @@ export default async function DashboardPage() {
     sections["my-bots"] = (
       <CollapsibleSection
         sectionId="my-bots"
-        title="My Bots"
+        title="My Agents"
         icon={<Bot className="h-5 w-5" />}
         count={dashboardBots.length}
         headerRight={
           <Link
-            href={`/profile/${user.id}`}
+            href="/agents"
             className="text-sm text-muted-foreground hover:text-foreground transition-colors"
           >
             Manage
@@ -507,40 +520,16 @@ export default async function DashboardPage() {
     <div className="mx-auto max-w-6xl px-4 py-6 sm:py-8 sm:px-6 lg:px-8">
       <h1 className="mb-4 sm:mb-6 text-2xl sm:text-3xl font-bold">Dashboard</h1>
 
-      {/* Welcome card for first-time users */}
-      {ideasCount === 0 && collaborationsCount === 0 && (
-        <div className="mb-6 rounded-xl border border-primary/30 bg-gradient-to-br from-primary/5 via-transparent to-purple-500/5 p-6">
-          <div className="flex items-start gap-3">
-            <Sparkles className="mt-0.5 h-6 w-6 shrink-0 text-primary" />
-            <div className="flex-1">
-              <h2 className="text-lg font-semibold">Welcome to VibeCodes!</h2>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Get started by sharing your first idea, exploring what others are building, or reading the guide.
-              </p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Link href="/ideas/new">
-                  <Button size="sm" className="gap-2">
-                    <Plus className="h-4 w-4" />
-                    Create your first idea
-                  </Button>
-                </Link>
-                <Link href="/feed">
-                  <Button variant="outline" size="sm" className="gap-2">
-                    <Rss className="h-4 w-4" />
-                    Browse the feed
-                  </Button>
-                </Link>
-                <Link href="/guide">
-                  <Button variant="outline" size="sm" className="gap-2">
-                    <BookOpen className="h-4 w-4" />
-                    Read the guide
-                  </Button>
-                </Link>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Onboarding: new users get the guided wizard, legacy users get the static card */}
+      {isNewUser ? (
+        <OnboardingWrapper
+          userFullName={userProfile?.full_name ?? null}
+          userAvatarUrl={userProfile?.avatar_url ?? null}
+          userGithubUsername={userProfile?.github_username ?? null}
+        />
+      ) : !onboardingCompleted && ideasCount === 0 && collaborationsCount === 0 ? (
+        <WelcomeExperience />
+      ) : null}
 
       {/* Stats — full width */}
       <StatsCards
@@ -552,6 +541,15 @@ export default async function DashboardPage() {
 
       {/* Reorderable two-column grid */}
       <DashboardGrid sections={sections} defaultOrder={DEFAULT_PANEL_ORDER} />
+
+      {/* Persistent onboarding checklist for users who completed the wizard but still have steps */}
+      {onboardingCompleted && (
+        <OnboardingChecklist
+          hasProfile={!!userProfile?.full_name}
+          hasIdea={ideasCount > 0}
+          hasAgent={botProfiles.length > 0}
+        />
+      )}
     </div>
   );
 }

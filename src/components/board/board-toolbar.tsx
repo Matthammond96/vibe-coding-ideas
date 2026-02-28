@@ -1,33 +1,21 @@
 "use client";
 
 import { useState } from "react";
+import { toast } from "sonner";
 import { Search, X, Upload, Sparkles, Archive, SlidersHorizontal } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import dynamic from "next/dynamic";
 import { getLabelColorConfig } from "@/lib/utils";
-import { ImportDialog } from "./import-dialog";
-import { AiGenerateDialog } from "./ai-generate-dialog";
-import type { BoardColumnWithTasks, BoardLabel, User, BotProfile, AiCredits } from "@/types";
+import type { BoardColumnWithTasks, BoardLabel, User, BotProfile } from "@/types";
+
+const ImportDialog = dynamic(() => import("./import-dialog").then((m) => m.ImportDialog), { ssr: false });
+const AiGenerateDialog = dynamic(() => import("./ai-generate-dialog").then((m) => m.AiGenerateDialog), { ssr: false });
 
 interface BoardToolbarProps {
   searchQuery: string;
@@ -47,9 +35,9 @@ interface BoardToolbarProps {
   ideaId: string;
   ideaDescription?: string;
   currentUserId: string;
-  aiEnabled?: boolean;
+  hasApiKey?: boolean;
   botProfiles?: BotProfile[];
-  aiCredits?: AiCredits | null;
+  isReadOnly?: boolean;
 }
 
 export function BoardToolbar({
@@ -70,9 +58,9 @@ export function BoardToolbar({
   ideaId,
   ideaDescription = "",
   currentUserId,
-  aiEnabled = false,
+  hasApiKey = false,
   botProfiles = [],
-  aiCredits,
+  isReadOnly = false,
 }: BoardToolbarProps) {
   const [importOpen, setImportOpen] = useState(false);
   const [aiGenerateOpen, setAiGenerateOpen] = useState(false);
@@ -86,13 +74,9 @@ export function BoardToolbar({
     }
   }
 
-  const hasFilters =
-    searchQuery || assigneeFilter !== "all" || labelFilter.length > 0 || dueDateFilter !== "all";
+  const hasFilters = searchQuery || assigneeFilter !== "all" || labelFilter.length > 0 || dueDateFilter !== "all";
 
-  const activeFilterCount =
-    (assigneeFilter !== "all" ? 1 : 0) +
-    labelFilter.length +
-    (dueDateFilter !== "all" ? 1 : 0);
+  const activeFilterCount = (assigneeFilter !== "all" ? 1 : 0) + labelFilter.length + (dueDateFilter !== "all" ? 1 : 0);
 
   const filterControls = (
     <>
@@ -126,24 +110,17 @@ export function BoardToolbar({
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-52 p-2" align="start">
-            <p className="mb-2 text-xs font-medium text-muted-foreground">
-              Filter by labels
-            </p>
+            <p className="mb-2 text-xs font-medium text-muted-foreground">Filter by labels</p>
             <div className="space-y-1">
               {boardLabels.map((label) => {
                 const config = getLabelColorConfig(label.color);
                 return (
-                  <div
-                    key={label.id}
-                    className="flex items-center gap-2 rounded-md px-1 py-1 hover:bg-muted/50"
-                  >
+                  <div key={label.id} className="flex items-center gap-2 rounded-md px-1 py-1 hover:bg-muted/50">
                     <Checkbox
                       checked={labelFilter.includes(label.id)}
                       onCheckedChange={() => handleLabelToggle(label.id)}
                     />
-                    <span
-                      className={`h-3 w-3 shrink-0 rounded-sm ${config.swatchColor}`}
-                    />
+                    <span className={`h-3 w-3 shrink-0 rounded-sm ${config.swatchColor}`} />
                     <span className="text-xs font-medium">{label.name}</span>
                   </div>
                 );
@@ -228,58 +205,65 @@ export function BoardToolbar({
           <SheetHeader>
             <SheetTitle>Filters</SheetTitle>
           </SheetHeader>
-          <div className="mt-4 flex flex-col gap-3">
-            {filterControls}
-          </div>
+          <div className="mt-4 flex flex-col gap-3">{filterControls}</div>
         </SheetContent>
       </Sheet>
 
       {/* Desktop: inline filters */}
-      <div className="hidden md:contents">
-        {filterControls}
-      </div>
+      <div className="hidden md:contents">{filterControls}</div>
 
-      <div className="ml-auto flex gap-2">
-        {aiEnabled && (
+      {!isReadOnly && (
+        <div className="ml-auto flex gap-2">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span tabIndex={!hasApiKey ? 0 : undefined}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className={`h-8 gap-1.5 text-xs ${!hasApiKey ? "pointer-events-none opacity-50" : ""}`}
+                    onClick={() => {
+                      if (!hasApiKey) return;
+                      setAiGenerateOpen(true);
+                    }}
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    <span className="hidden sm:inline">AI Generate</span>
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {!hasApiKey && (
+                <TooltipContent side="bottom">
+                  Add your API key in profile settings to enable AI
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
           <Button
             variant="outline"
             size="sm"
             className="h-8 gap-1.5 text-xs"
-            onClick={() => setAiGenerateOpen(true)}
-            disabled={!aiCredits?.isByok && aiCredits?.remaining === 0}
-            title={!aiCredits?.isByok && aiCredits?.remaining === 0 ? "Daily limit reached" : undefined}
+            onClick={() => setImportOpen(true)}
           >
-            <Sparkles className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">AI Generate</span>
-            {aiCredits && !aiCredits.isByok && aiCredits.remaining !== null && (
-              <span className="ml-1 text-[10px] text-muted-foreground">
-                {aiCredits.remaining}/{aiCredits.limit}
-              </span>
-            )}
+            <Upload className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Import</span>
           </Button>
-        )}
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-8 gap-1.5 text-xs"
-          onClick={() => setImportOpen(true)}
-        >
-          <Upload className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">Import</span>
-        </Button>
-      </div>
+        </div>
+      )}
 
-      <ImportDialog
-        open={importOpen}
-        onOpenChange={setImportOpen}
-        ideaId={ideaId}
-        currentUserId={currentUserId}
-        columns={columns}
-        boardLabels={boardLabels}
-        teamMembers={teamMembers}
-      />
+      {!isReadOnly && (
+        <ImportDialog
+          open={importOpen}
+          onOpenChange={setImportOpen}
+          ideaId={ideaId}
+          currentUserId={currentUserId}
+          columns={columns}
+          boardLabels={boardLabels}
+          teamMembers={teamMembers}
+        />
+      )}
 
-      {aiEnabled && (
+      {!isReadOnly && (
         <AiGenerateDialog
           open={aiGenerateOpen}
           onOpenChange={setAiGenerateOpen}
@@ -290,7 +274,6 @@ export function BoardToolbar({
           boardLabels={boardLabels}
           teamMembers={teamMembers}
           bots={botProfiles}
-          aiCredits={aiCredits}
         />
       )}
     </div>

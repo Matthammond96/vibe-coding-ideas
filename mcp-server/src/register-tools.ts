@@ -78,6 +78,22 @@ import {
   reportBugSchema,
 } from "./tools/labels";
 import {
+  listDiscussions,
+  listDiscussionsSchema,
+  getDiscussion,
+  getDiscussionSchema,
+  addDiscussionReply,
+  addDiscussionReplySchema,
+  createDiscussion,
+  createDiscussionSchema,
+  updateDiscussion,
+  updateDiscussionSchema,
+  deleteDiscussion,
+  deleteDiscussionSchema,
+  getDiscussionsReadyToConvert,
+  getDiscussionsReadyToConvertSchema,
+} from "./tools/discussions";
+import {
   listAttachments,
   listAttachmentsSchema,
   uploadAttachment,
@@ -93,6 +109,10 @@ import {
   markAllNotificationsRead,
   markAllNotificationsReadSchema,
 } from "./tools/notifications";
+import {
+  getAgentMentions,
+  getAgentMentionsSchema,
+} from "./tools/agent-mentions";
 import {
   updateProfile,
   updateProfileSchema,
@@ -523,6 +543,106 @@ export function registerTools(
     }
   );
 
+  // --- Discussion Tools ---
+
+  server.tool(
+    "list_discussions",
+    "List discussions for an idea with optional status filter. Returns title, status, reply count, author, and last activity.",
+    listDiscussionsSchema.shape,
+    async (args: Record<string, unknown>, extra: ServerExtra) => {
+      try {
+        const ctx = await getContext(extra);
+        return jsonResult(await listDiscussions(ctx, listDiscussionsSchema.parse(args)));
+      } catch (e) {
+        return errorResult(e);
+      }
+    }
+  );
+
+  server.tool(
+    "get_discussion",
+    "Get full discussion thread including body, all replies with nested structure, and author details.",
+    getDiscussionSchema.shape,
+    async (args: Record<string, unknown>, extra: ServerExtra) => {
+      try {
+        const ctx = await getContext(extra);
+        return jsonResult(await getDiscussion(ctx, getDiscussionSchema.parse(args)));
+      } catch (e) {
+        return errorResult(e);
+      }
+    }
+  );
+
+  server.tool(
+    "add_discussion_reply",
+    "Add a reply to a discussion thread. Posted as the active bot identity. Supports nested replies via parent_reply_id.",
+    addDiscussionReplySchema.shape,
+    async (args: Record<string, unknown>, extra: ServerExtra) => {
+      try {
+        const ctx = await getContext(extra);
+        return jsonResult(await addDiscussionReply(ctx, addDiscussionReplySchema.parse(args)));
+      } catch (e) {
+        return errorResult(e);
+      }
+    }
+  );
+
+  server.tool(
+    "create_discussion",
+    "Create a new discussion thread on an idea. Requires title and body (markdown).",
+    createDiscussionSchema.shape,
+    async (args: Record<string, unknown>, extra: ServerExtra) => {
+      try {
+        const ctx = await getContext(extra);
+        return jsonResult(await createDiscussion(ctx, createDiscussionSchema.parse(args)));
+      } catch (e) {
+        return errorResult(e);
+      }
+    }
+  );
+
+  server.tool(
+    "update_discussion",
+    "Update a discussion's title, body, status (open/resolved/converted), or pinned state. Only changed fields need to be provided.",
+    updateDiscussionSchema.shape,
+    async (args: Record<string, unknown>, extra: ServerExtra) => {
+      try {
+        const ctx = await getContext(extra);
+        return jsonResult(await updateDiscussion(ctx, updateDiscussionSchema.parse(args)));
+      } catch (e) {
+        return errorResult(e);
+      }
+    }
+  );
+
+  server.tool(
+    "delete_discussion",
+    "Permanently delete a discussion thread and all its replies from an idea.",
+    deleteDiscussionSchema.shape,
+    async (args: Record<string, unknown>, extra: ServerExtra) => {
+      try {
+        const ctx = await getContext(extra);
+        return jsonResult(await deleteDiscussion(ctx, deleteDiscussionSchema.parse(args)));
+      } catch (e) {
+        return errorResult(e);
+      }
+    }
+  );
+
+  server.tool(
+    "get_discussions_ready_to_convert",
+    "Get discussions marked as ready to convert into board tasks. Returns full context with replies, target column, and assignee. Includes workflow instructions for creating tasks.",
+    getDiscussionsReadyToConvertSchema.shape,
+    async (args: Record<string, unknown>, extra: ServerExtra) => {
+      try {
+        const ctx = await getContext(extra);
+        return jsonResult(await getDiscussionsReadyToConvert(ctx, getDiscussionsReadyToConvertSchema.parse(args)));
+      } catch (e) {
+        return errorResult(e);
+      }
+    }
+  );
+
   // --- Attachment Tools ---
 
   server.tool(
@@ -611,6 +731,20 @@ export function registerTools(
     }
   );
 
+  server.tool(
+    "get_agent_mentions",
+    "Get unread @mentions for your agents in discussions. Returns enriched context with agent, actor, idea, and discussion info plus response workflow instructions.",
+    getAgentMentionsSchema.shape,
+    async (args: Record<string, unknown>, extra: ServerExtra) => {
+      try {
+        const ctx = await getContext(extra);
+        return jsonResult(await getAgentMentions(ctx, getAgentMentionsSchema.parse(args)));
+      } catch (e) {
+        return errorResult(e);
+      }
+    }
+  );
+
   // --- Profile Tools ---
 
   server.tool(
@@ -627,11 +761,11 @@ export function registerTools(
     }
   );
 
-  // --- Bot Tools ---
+  // --- Agent Tools ---
 
   server.tool(
-    "list_bots",
-    "List bots owned by the current user (or a specific owner). Returns bot profiles with name, role, system prompt, and active status.",
+    "list_agents",
+    "List agents owned by the current user (or a specific owner). Returns agent profiles with name, role, system prompt, and active status.",
     listBotsSchema.shape,
     async (args: Record<string, unknown>, extra: ServerExtra) => {
       try {
@@ -644,8 +778,8 @@ export function registerTools(
   );
 
   server.tool(
-    "get_bot_prompt",
-    "Get the system prompt for a specific bot or the current active bot identity.",
+    "get_agent_prompt",
+    "Get the system prompt for a specific agent or the current active agent identity.",
     getBotPromptSchema.shape,
     async (args: Record<string, unknown>, extra: ServerExtra) => {
       try {
@@ -658,8 +792,8 @@ export function registerTools(
   );
 
   server.tool(
-    "set_bot_identity",
-    "Switch session identity to a bot persona. Provide bot_id or bot_name. Omit both to reset to default identity. Returns the bot's system prompt.",
+    "set_agent_identity",
+    "Switch session identity to an agent persona. Provide agent_id or agent_name. Omit both to reset to default identity. Returns the agent's system prompt.",
     setBotIdentitySchema.shape,
     async (args: Record<string, unknown>, extra: ServerExtra) => {
       try {
@@ -675,8 +809,8 @@ export function registerTools(
   );
 
   server.tool(
-    "create_bot",
-    "Create a new bot profile with a name, role, and system prompt. The bot gets its own user identity for assignments and activity logs.",
+    "create_agent",
+    "Create a new agent profile with a name, role, and system prompt. The agent gets its own user identity for assignments and activity logs.",
     createBotSchema.shape,
     async (args: Record<string, unknown>, extra: ServerExtra) => {
       try {

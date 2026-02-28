@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { supabase, BOT_USER_ID } from "./supabase";
+import { supabase, BOT_USER_ID, OWNER_USER_ID } from "./supabase";
 import { registerTools } from "./register-tools";
 import type { McpContext } from "./context";
 
@@ -11,7 +11,7 @@ const server = new McpServer(
 );
 
 // Session-level mutable identity
-// Can be overridden via VIBECODES_BOT_ID env var or set_bot_identity tool
+// Can be overridden via VIBECODES_BOT_ID env var or set_agent_identity tool
 let activeBotId: string | null = process.env.VIBECODES_BOT_ID || null;
 
 export function setActiveBotId(botId: string | null) {
@@ -25,6 +25,11 @@ export function getActiveBotId(): string | null {
 const getContext = (): McpContext => ({
   supabase,
   userId: activeBotId || BOT_USER_ID,
+  // ownerUserId = the real human behind the bot session.
+  // VIBECODES_OWNER_ID overrides for local dev so tools like list_agents and
+  // get_agent_mentions can discover agents the human created via the web UI.
+  // Falls back to BOT_USER_ID when a bot identity is active (mirrors remote MCP).
+  ownerUserId: OWNER_USER_ID || (activeBotId ? BOT_USER_ID : undefined),
 });
 
 registerTools(server, getContext, setActiveBotId);

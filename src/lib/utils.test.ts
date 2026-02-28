@@ -6,6 +6,7 @@ import {
   formatDueDate,
   getLabelColorConfig,
   stripMarkdown,
+  stripMarkdownForMeta,
 } from "./utils";
 
 describe("cn", () => {
@@ -47,6 +48,15 @@ describe("formatRelativeTime", () => {
   it("returns days for < 30 days", () => {
     expect(formatRelativeTime("2025-06-10T12:00:00Z")).toBe("5d ago");
   });
+
+  it("returns months for < 1 year", () => {
+    // 3 months ago = ~90 days
+    expect(formatRelativeTime("2025-03-15T12:00:00Z")).toBe("3mo ago");
+  });
+
+  it("returns years for >= 1 year", () => {
+    expect(formatRelativeTime("2023-06-15T12:00:00Z")).toBe("2y ago");
+  });
 });
 
 describe("getDueDateStatus", () => {
@@ -84,9 +94,9 @@ describe("getLabelColorConfig", () => {
     expect(config.value).toBe("blue");
   });
 
-  it("returns default (blue) for unknown color", () => {
+  it("returns default blue for unknown color", () => {
     const config = getLabelColorConfig("nonexistent");
-    expect(config).toBeDefined();
+    expect(config.value).toBe("blue");
   });
 });
 
@@ -116,5 +126,71 @@ describe("stripMarkdown", () => {
     expect(stripMarkdown("text ![alt](img.png) more").trim()).toContain("text");
     expect(stripMarkdown("text ![alt](img.png) more").trim()).toContain("more");
     expect(stripMarkdown("text ![alt](img.png) more").trim()).not.toContain("img.png");
+  });
+
+  it("removes strikethrough syntax", () => {
+    expect(stripMarkdown("~~deleted~~")).toBe("deleted");
+  });
+
+  it("removes heading lines", () => {
+    expect(stripMarkdown("# Heading\nParagraph")).toBe("Paragraph");
+  });
+
+  it("removes unordered list markers", () => {
+    expect(stripMarkdown("- item one\n- item two")).toBe("item one item two");
+  });
+
+  it("removes ordered list markers", () => {
+    expect(stripMarkdown("1. first\n2. second")).toBe("first second");
+  });
+
+  it("removes blockquote markers", () => {
+    expect(stripMarkdown("> quoted text")).toBe("quoted text");
+  });
+
+  it("collapses multiple newlines and spaces", () => {
+    expect(stripMarkdown("a\n\n\nb")).toBe("a b");
+  });
+
+  it("returns empty string for empty input", () => {
+    expect(stripMarkdown("")).toBe("");
+  });
+
+  it("removes bold italic combined syntax", () => {
+    expect(stripMarkdown("***bold italic***")).toBe("bold italic");
+  });
+});
+
+describe("stripMarkdownForMeta", () => {
+  it("returns short text unchanged", () => {
+    expect(stripMarkdownForMeta("Hello world")).toBe("Hello world");
+  });
+
+  it("strips markdown and truncates at word boundary", () => {
+    const long = "**Bold intro** with a " + "really long description ".repeat(10);
+    const result = stripMarkdownForMeta(long);
+    expect(result.length).toBeLessThanOrEqual(156); // 155 + ellipsis char
+    expect(result).not.toContain("**");
+    expect(result.endsWith("\u2026")).toBe(true);
+  });
+
+  it("respects custom max length", () => {
+    const text = "Short sentence here. Another sentence follows after this one.";
+    const result = stripMarkdownForMeta(text, 30);
+    expect(result.length).toBeLessThanOrEqual(31); // 30 + ellipsis
+  });
+
+  it("handles empty string", () => {
+    expect(stripMarkdownForMeta("")).toBe("");
+  });
+
+  it("strips markdown before truncating", () => {
+    const md = "# Heading\n\n**Bold** and *italic* content with [a link](https://example.com)";
+    const result = stripMarkdownForMeta(md);
+    expect(result).not.toContain("#");
+    expect(result).not.toContain("**");
+    expect(result).not.toContain("https://");
+    expect(result).toContain("Bold");
+    expect(result).toContain("a link");
   });
 });

@@ -16,11 +16,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { createClient } from "@/lib/supabase/client";
 import { formatRelativeTime } from "@/lib/utils";
 import { logTaskActivity } from "@/lib/activity";
@@ -32,6 +28,7 @@ interface TaskAttachmentsSectionProps {
   currentUserId: string;
   coverImagePath?: string | null;
   onCoverChange?: (path: string | null) => void;
+  isReadOnly?: boolean;
 }
 
 function formatFileSize(bytes: number): string {
@@ -50,6 +47,7 @@ export function TaskAttachmentsSection({
   currentUserId,
   coverImagePath: initialCoverPath,
   onCoverChange,
+  isReadOnly = false,
 }: TaskAttachmentsSectionProps) {
   const [attachments, setAttachments] = useState<BoardTaskAttachment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -99,11 +97,7 @@ export function TaskAttachmentsSection({
           filter: `task_id=eq.${taskId}`,
         },
         async (payload) => {
-          const { data } = await supabase
-            .from("board_task_attachments")
-            .select("*")
-            .eq("id", payload.new.id)
-            .single();
+          const { data } = await supabase.from("board_task_attachments").select("*").eq("id", payload.new.id).single();
 
           if (data) {
             setAttachments((prev) => {
@@ -122,9 +116,7 @@ export function TaskAttachmentsSection({
           filter: `task_id=eq.${taskId}`,
         },
         (payload) => {
-          setAttachments((prev) =>
-            prev.filter((a) => a.id !== payload.old.id)
-          );
+          setAttachments((prev) => prev.filter((a) => a.id !== payload.old.id));
         }
       )
       .subscribe();
@@ -170,9 +162,7 @@ export function TaskAttachmentsSection({
     const uniqueName = `${crypto.randomUUID()}.${ext}`;
     const storagePath = `${ideaId}/${taskId}/${uniqueName}`;
 
-    const { error: uploadError } = await supabase.storage
-      .from("task-attachments")
-      .upload(storagePath, file);
+    const { error: uploadError } = await supabase.storage.from("task-attachments").upload(storagePath, file);
 
     if (uploadError) {
       console.error("Upload failed:", uploadError.message);
@@ -181,17 +171,15 @@ export function TaskAttachmentsSection({
       return;
     }
 
-    const { error: dbError } = await supabase
-      .from("board_task_attachments")
-      .insert({
-        task_id: taskId,
-        idea_id: ideaId,
-        uploaded_by: currentUserId,
-        file_name: file.name,
-        file_size: file.size,
-        content_type: file.type,
-        storage_path: storagePath,
-      });
+    const { error: dbError } = await supabase.from("board_task_attachments").insert({
+      task_id: taskId,
+      idea_id: ideaId,
+      uploaded_by: currentUserId,
+      file_name: file.name,
+      file_size: file.size,
+      content_type: file.type,
+      storage_path: storagePath,
+    });
 
     if (!dbError) {
       logTaskActivity(taskId, ideaId, currentUserId, "attachment_added", {
@@ -200,10 +188,7 @@ export function TaskAttachmentsSection({
 
       // Auto-set as cover if it's an image and no cover exists
       if (isImageType(file.type) && !localCoverPath) {
-        await supabase
-          .from("board_tasks")
-          .update({ cover_image_path: storagePath })
-          .eq("id", taskId);
+        await supabase.from("board_tasks").update({ cover_image_path: storagePath }).eq("id", taskId);
         updateCover(storagePath);
       }
     }
@@ -230,23 +215,15 @@ export function TaskAttachmentsSection({
 
     // If deleting the cover image, clear the cover
     if (attachment.storage_path === localCoverPath) {
-      await supabase
-        .from("board_tasks")
-        .update({ cover_image_path: null })
-        .eq("id", taskId);
+      await supabase.from("board_tasks").update({ cover_image_path: null }).eq("id", taskId);
       updateCover(null);
     }
 
     // Delete from storage
-    await supabase.storage
-      .from("task-attachments")
-      .remove([attachment.storage_path]);
+    await supabase.storage.from("task-attachments").remove([attachment.storage_path]);
 
     // Delete from DB
-    const { error } = await supabase
-      .from("board_task_attachments")
-      .delete()
-      .eq("id", attachment.id);
+    const { error } = await supabase.from("board_task_attachments").delete().eq("id", attachment.id);
 
     if (!error) {
       logTaskActivity(taskId, ideaId, currentUserId, "attachment_removed", {
@@ -263,28 +240,20 @@ export function TaskAttachmentsSection({
   async function handleSetCover(storagePath: string) {
     updateCover(storagePath);
     const supabase = createClient();
-    await supabase
-      .from("board_tasks")
-      .update({ cover_image_path: storagePath })
-      .eq("id", taskId);
+    await supabase.from("board_tasks").update({ cover_image_path: storagePath }).eq("id", taskId);
   }
 
   async function handleRemoveCover() {
     updateCover(null);
     const supabase = createClient();
-    await supabase
-      .from("board_tasks")
-      .update({ cover_image_path: null })
-      .eq("id", taskId);
+    await supabase.from("board_tasks").update({ cover_image_path: null }).eq("id", taskId);
   }
 
   async function handleDownload(attachment: BoardTaskAttachment) {
     const supabase = createClient();
-    const { data } = await supabase.storage
-      .from("task-attachments")
-      .createSignedUrl(attachment.storage_path, 60, {
-        download: attachment.file_name,
-      });
+    const { data } = await supabase.storage.from("task-attachments").createSignedUrl(attachment.storage_path, 60, {
+      download: attachment.file_name,
+    });
 
     if (data?.signedUrl) {
       window.open(data.signedUrl, "_blank");
@@ -293,9 +262,7 @@ export function TaskAttachmentsSection({
 
   async function handlePreview(attachment: BoardTaskAttachment) {
     const supabase = createClient();
-    const { data } = await supabase.storage
-      .from("task-attachments")
-      .createSignedUrl(attachment.storage_path, 300);
+    const { data } = await supabase.storage.from("task-attachments").createSignedUrl(attachment.storage_path, 300);
 
     if (data?.signedUrl) {
       setPreviewUrl(data.signedUrl);
@@ -363,9 +330,7 @@ export function TaskAttachmentsSection({
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[11px] font-medium">{file.name}</p>
-                  <p className="text-[10px] text-muted-foreground">
-                    {formatFileSize(file.size)} &middot; Uploading...
-                  </p>
+                  <p className="text-[10px] text-muted-foreground">{formatFileSize(file.size)} &middot; Uploading...</p>
                 </div>
               </div>
             ))}
@@ -392,16 +357,13 @@ export function TaskAttachmentsSection({
                   </div>
                 )}
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[11px] font-medium">
-                    {attachment.file_name}
-                  </p>
+                  <p className="truncate text-[11px] font-medium">{attachment.file_name}</p>
                   <p className="text-[10px] text-muted-foreground">
-                    {formatFileSize(attachment.file_size)} &middot;{" "}
-                    {formatRelativeTime(attachment.created_at)}
+                    {formatFileSize(attachment.file_size)} &middot; {formatRelativeTime(attachment.created_at)}
                   </p>
                 </div>
                 <div className="flex shrink-0 gap-0.5">
-                  {isImageType(attachment.content_type) && (
+                  {!isReadOnly && isImageType(attachment.content_type) && (
                     attachment.storage_path === localCoverPath ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
@@ -426,8 +388,7 @@ export function TaskAttachmentsSection({
                         </TooltipTrigger>
                         <TooltipContent>Set as cover</TooltipContent>
                       </Tooltip>
-                    )
-                  )}
+                    ))}
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <button
@@ -439,17 +400,19 @@ export function TaskAttachmentsSection({
                     </TooltipTrigger>
                     <TooltipContent>Download</TooltipContent>
                   </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        className="cursor-pointer rounded p-1 text-muted-foreground hover:text-destructive"
-                        onClick={() => handleDelete(attachment)}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>Delete</TooltipContent>
-                  </Tooltip>
+                  {!isReadOnly && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          className="cursor-pointer rounded p-1 text-muted-foreground hover:text-destructive"
+                          onClick={() => handleDelete(attachment)}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>Delete</TooltipContent>
+                    </Tooltip>
+                  )}
                 </div>
               </div>
             ))}
@@ -457,78 +420,83 @@ export function TaskAttachmentsSection({
         </ScrollArea>
       ) : null}
 
-      {/* Drop zone + upload buttons */}
-      <div
-        className={`relative rounded-lg border-2 border-dashed p-4 text-center transition-colors ${
-          isDragging
-            ? "border-primary bg-primary/5"
-            : "border-border"
-        }`}
-        onDragEnter={handleDragEnter}
-        onDragLeave={handleDragLeave}
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
-      >
-        {isDragging ? (
-          <p className="text-sm text-primary">Drop files here</p>
-        ) : (
-          <>
-            <input
-              ref={fileInputRef}
-              id={`file-upload-${taskId}`}
-              type="file"
-              className="hidden"
-              accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip,.md"
-              onChange={handleFileSelect}
-              multiple
-            />
-            <input
-              ref={cameraInputRef}
-              id={`camera-upload-${taskId}`}
-              type="file"
-              className="hidden"
-              accept="image/*"
-              capture="environment"
-              onChange={handleFileSelect}
-            />
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              <label htmlFor={uploading ? undefined : `file-upload-${taskId}`} className={uploading ? "pointer-events-none" : undefined}>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="pointer-events-none gap-1.5 text-xs"
-                  disabled={uploading}
-                  tabIndex={-1}
-                  asChild
-                >
-                  <span>
-                    {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                    {uploading ? "Uploading..." : "Choose file"}
-                  </span>
-                </Button>
-              </label>
-              <label htmlFor={uploading ? undefined : `camera-upload-${taskId}`} className={uploading ? "pointer-events-none" : undefined}>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="pointer-events-none gap-1.5 text-xs"
-                  disabled={uploading}
-                  tabIndex={-1}
-                  asChild
-                >
-                  <span>
-                    <Camera className="h-3.5 w-3.5" />
-                    Camera
-                  </span>
-                </Button>
-              </label>
-            </div>
-            <p className="mt-2 text-[10px] text-muted-foreground">
-              Max 10MB. Drag &amp; drop, paste, or pick from gallery / files.
-            </p>
-          </>
-        )}
-      </div>
+      {/* Drop zone + upload buttons — hidden for read-only */}
+      {!isReadOnly && (
+        <div
+          className={`relative rounded-lg border-2 border-dashed p-4 text-center transition-colors ${
+            isDragging
+              ? "border-primary bg-primary/5"
+              : "border-border"
+          }`}
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+        >
+          {isDragging ? (
+            <p className="text-sm text-primary">Drop files here</p>
+          ) : (
+            <>
+              <input
+                ref={fileInputRef}
+                id={`file-upload-${taskId}`}
+                type="file"
+                className="hidden"
+                accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip,.md,.html"
+                onChange={handleFileSelect}
+                multiple
+              />
+              <input
+                ref={cameraInputRef}
+                id={`camera-upload-${taskId}`}
+                type="file"
+                className="hidden"
+                accept="image/*"
+                capture="environment"
+                onChange={handleFileSelect}
+              />
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <label htmlFor={uploading ? undefined : `file-upload-${taskId}`} className={uploading ? "pointer-events-none" : undefined}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="pointer-events-none gap-1.5 text-xs"
+                    disabled={uploading}
+                    tabIndex={-1}
+                    asChild
+                  >
+                    <span>
+                      {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                      {uploading ? "Uploading..." : "Choose file"}
+                    </span>
+                  </Button>
+                </label>
+                <label htmlFor={uploading ? undefined : `camera-upload-${taskId}`} className={uploading ? "pointer-events-none" : undefined}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="pointer-events-none gap-1.5 text-xs"
+                    disabled={uploading}
+                    tabIndex={-1}
+                    asChild
+                  >
+                    <span>
+                      <Camera className="h-3.5 w-3.5" />
+                      Camera
+                    </span>
+                  </Button>
+                </label>
+              </div>
+              <p className="mt-2 text-[10px] text-muted-foreground">
+                Max 10MB. Drag &amp; drop, paste, or pick from gallery / files.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+      {isReadOnly && attachments.length === 0 && !loading && (
+        <p className="text-xs text-muted-foreground">No attachments</p>
+      )}
 
       {/* Image preview overlay */}
       {previewUrl && (

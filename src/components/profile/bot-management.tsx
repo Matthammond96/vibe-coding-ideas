@@ -20,7 +20,7 @@ export function BotManagement({ bots }: BotManagementProps) {
     try {
       await updateBot(bot.id, { is_active: !bot.is_active });
     } catch {
-      toast.error("Failed to update bot");
+      toast.error("Failed to update agent");
     }
   }
 
@@ -29,14 +29,14 @@ export function BotManagement({ bots }: BotManagementProps) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Bot className="h-5 w-5" />
-          <h2 className="text-lg font-semibold">My Bots</h2>
+          <h2 className="text-lg font-semibold">My Agents</h2>
         </div>
         <CreateBotDialog />
       </div>
 
       {bots.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No bots yet. Create one to give Claude Code sessions distinct identities.
+          No agents yet. Create one to give Claude Code sessions distinct identities.
         </p>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
@@ -52,7 +52,7 @@ export function BotManagement({ bots }: BotManagementProps) {
             return (
               <div
                 key={bot.id}
-                className={`flex items-start gap-3 rounded-lg border p-3 ${
+                className={`flex items-start gap-3 overflow-hidden rounded-lg border p-3 ${
                   bot.is_active ? "border-border" : "border-border/50 opacity-60"
                 }`}
               >
@@ -63,12 +63,12 @@ export function BotManagement({ bots }: BotManagementProps) {
                   </AvatarFallback>
                 </Avatar>
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
                     <span className="font-medium text-sm truncate">
                       {bot.name}
                     </span>
                     {bot.role && (
-                      <Badge variant="secondary" className="text-[10px] shrink-0">
+                      <Badge variant="secondary" className="text-[10px] shrink-0 max-w-[120px] truncate">
                         {bot.role}
                       </Badge>
                     )}

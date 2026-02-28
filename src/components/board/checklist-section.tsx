@@ -7,17 +7,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { logTaskActivity } from "@/lib/activity";
-import {
-  createChecklistItem,
-  toggleChecklistItem,
-  deleteChecklistItem,
-} from "@/actions/board";
+import { createChecklistItem, toggleChecklistItem, deleteChecklistItem } from "@/actions/board";
 import type { BoardChecklistItem } from "@/types";
 
 interface ChecklistSectionProps {
@@ -25,6 +17,7 @@ interface ChecklistSectionProps {
   taskId: string;
   ideaId: string;
   currentUserId?: string;
+  isReadOnly?: boolean;
 }
 
 export function ChecklistSection({
@@ -32,6 +25,7 @@ export function ChecklistSection({
   taskId,
   ideaId,
   currentUserId,
+  isReadOnly = false,
 }: ChecklistSectionProps) {
   const [localItems, setLocalItems] = useState<BoardChecklistItem[]>(items);
   const [newTitle, setNewTitle] = useState("");
@@ -91,9 +85,7 @@ export function ChecklistSection({
 
     // Optimistic: toggle immediately
     const newCompleted = !item.completed;
-    setLocalItems((prev) =>
-      prev.map((i) => (i.id === itemId ? { ...i, completed: newCompleted } : i))
-    );
+    setLocalItems((prev) => prev.map((i) => (i.id === itemId ? { ...i, completed: newCompleted } : i)));
 
     pendingOps.current++;
     try {
@@ -105,11 +97,7 @@ export function ChecklistSection({
       }
     } catch {
       // Rollback
-      setLocalItems((prev) =>
-        prev.map((i) =>
-          i.id === itemId ? { ...i, completed: !newCompleted } : i
-        )
-      );
+      setLocalItems((prev) => prev.map((i) => (i.id === itemId ? { ...i, completed: !newCompleted } : i)));
       toast.error("Failed to update checklist item");
     } finally {
       pendingOps.current--;
@@ -158,7 +146,8 @@ export function ChecklistSection({
             >
               <Checkbox
                 checked={item.completed}
-                onCheckedChange={() => handleToggle(item.id)}
+                onCheckedChange={isReadOnly ? undefined : () => handleToggle(item.id)}
+                disabled={isReadOnly}
               />
               <span
                 className={`flex-1 text-sm ${
@@ -169,45 +158,49 @@ export function ChecklistSection({
               >
                 {item.title}
               </span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 opacity-0 group-hover:opacity-100"
-                    onClick={() => handleDelete(item.id)}
-                  >
-                    <Trash2 className="h-3 w-3 text-muted-foreground" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Delete item</TooltipContent>
-              </Tooltip>
+              {!isReadOnly && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 opacity-0 group-hover:opacity-100"
+                      onClick={() => handleDelete(item.id)}
+                    >
+                      <Trash2 className="h-3 w-3 text-muted-foreground" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Delete item</TooltipContent>
+                </Tooltip>
+              )}
             </div>
           ))}
       </div>
 
-      <form onSubmit={handleAdd} className="flex gap-2">
-        <Input
-          value={newTitle}
-          onChange={(e) => setNewTitle(e.target.value)}
-          placeholder="Add an item..."
-          className="h-8 text-sm"
-        />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="submit"
-              size="sm"
-              variant="outline"
-              className="h-8"
-              disabled={!newTitle.trim()}
-            >
-              <Plus className="h-3 w-3" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Add item</TooltipContent>
-        </Tooltip>
-      </form>
+      {!isReadOnly && (
+        <form onSubmit={handleAdd} className="flex gap-2">
+          <Input
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="Add an item..."
+            className="h-8 text-sm"
+          />
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="submit"
+                size="sm"
+                variant="outline"
+                className="h-8"
+                disabled={!newTitle.trim()}
+              >
+                <Plus className="h-3 w-3" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Add item</TooltipContent>
+          </Tooltip>
+        </form>
+      )}
     </div>
   );
 }

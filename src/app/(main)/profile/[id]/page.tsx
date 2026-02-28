@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { requireAuth } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { ProfileHeader } from "@/components/profile/profile-header";
 import { ProfileTabs } from "@/components/profile/profile-tabs";
@@ -8,8 +9,9 @@ import { EditProfileDialog } from "@/components/profile/edit-profile-dialog";
 import { NotificationSettings } from "@/components/profile/notification-settings";
 import { ApiKeySettings } from "@/components/profile/api-key-settings";
 import { BoardColumnSettings } from "@/components/profile/board-column-settings";
-import { BotManagement } from "@/components/profile/bot-management";
-import type { IdeaWithAuthor, BotProfile } from "@/types";
+import Link from "next/link";
+import { Bot } from "lucide-react";
+import type { IdeaWithAuthor } from "@/types";
 import type { Metadata } from "next";
 
 interface PageProps {
@@ -21,24 +23,36 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const supabase = await createClient();
   const { data: profile } = await supabase
     .from("users")
-    .select("full_name")
+    .select("full_name, bio")
     .eq("id", id)
     .single();
 
   if (!profile) return { title: "User Not Found" };
 
+  const displayName = profile.full_name ?? "User";
+  const description = profile.bio
+    ? profile.bio.substring(0, 155)
+    : `${displayName} — Member of VibeCodes`;
+
   return {
-    title: `${profile.full_name ?? "User"} - VibeCodes`,
+    title: displayName,
+    description,
+    openGraph: {
+      title: displayName,
+      description,
+      type: "profile",
+    },
+    twitter: {
+      card: "summary",
+      title: displayName,
+      description,
+    },
   };
 }
 
 export default async function ProfilePage({ params }: PageProps) {
   const { id } = await params;
-  const supabase = await createClient();
-
-  const {
-    data: { user: currentUser },
-  } = await supabase.auth.getUser();
+  const { user: currentUser, supabase } = await requireAuth();
 
   // Fetch profile user
   const { data: profileUser } = await supabase
@@ -140,17 +154,6 @@ export default async function ProfilePage({ params }: PageProps) {
     isCurrentUserAdmin = adminCheck?.is_admin ?? false;
   }
 
-  // Fetch user's bots (only on own profile)
-  let userBots: BotProfile[] = [];
-  if (currentUser?.id === id) {
-    const { data: bots } = await supabase
-      .from("bot_profiles")
-      .select("*")
-      .eq("owner_id", id)
-      .order("created_at", { ascending: true });
-    userBots = (bots ?? []) as BotProfile[];
-  }
-
   // Fetch task counts for displayed ideas
   const allProfileIdeaIds = [
     ...(ideas ?? []).map((i) => i.id),
@@ -191,9 +194,7 @@ export default async function ProfilePage({ params }: PageProps) {
                 <EditProfileDialog user={profileUser} />
                 <NotificationSettings preferences={profileUser.notification_preferences} />
                 <BoardColumnSettings columns={profileUser.default_board_columns} />
-                {profileUser.ai_enabled && (
-                  <ApiKeySettings hasKey={!!profileUser.encrypted_anthropic_key} />
-                )}
+                <ApiKeySettings hasKey={!!profileUser.encrypted_anthropic_key} />
               </div>
               {/* Mobile: Edit Profile visible + rest in dropdown */}
               <div className="contents sm:hidden">
@@ -201,20 +202,25 @@ export default async function ProfilePage({ params }: PageProps) {
                 <ProfileSettingsMenu
                   preferences={profileUser.notification_preferences}
                   columns={profileUser.default_board_columns}
-                  aiEnabled={profileUser.ai_enabled}
                   hasApiKey={!!profileUser.encrypted_anthropic_key}
                 />
               </div>
             </>
           )}
           {showDeleteButton && (
-            <DeleteUserButton userId={id} userName={profileUser.full_name} redirectTo="/feed" />
+            <DeleteUserButton userId={id} userName={profileUser.full_name} redirectTo="/ideas" />
           )}
         </div>
       )}
-      {currentUser?.id === id && userBots.length >= 0 && (
-        <div className="mt-6">
-          <BotManagement bots={userBots} />
+      {currentUser?.id === id && (
+        <div className="mt-4">
+          <Link
+            href="/agents"
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <Bot className="h-4 w-4" />
+            Manage agents
+          </Link>
         </div>
       )}
       <ProfileTabs

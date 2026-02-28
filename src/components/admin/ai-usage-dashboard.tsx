@@ -6,7 +6,6 @@ import {
   Activity,
   Coins,
   Cpu,
-  Key,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,16 +23,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { AiUserManagementRow } from "./ai-user-management-row";
 import { formatRelativeTime } from "@/lib/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
-import type { UsageLogWithUser, AdminUser } from "@/app/(main)/admin/page";
+import type { UsageLogWithUser } from "@/app/(main)/admin/page";
 
 interface AiUsageDashboardProps {
   usageLogs: UsageLogWithUser[];
-  users: AdminUser[];
-  filters: { from: string; to: string; action: string };
+  filters: { from: string; to: string; action: string; source: string };
 }
 
 const ACTION_LABELS: Record<string, string> = {
@@ -41,6 +37,7 @@ const ACTION_LABELS: Record<string, string> = {
   generate_questions: "Generate Questions",
   enhance_with_context: "Enhance with Context",
   generate_board_tasks: "Generate Board Tasks",
+  enhance_task_description: "Enhance Task Description",
 };
 
 function estimateCost(inputTokens: number, outputTokens: number): number {
@@ -49,7 +46,6 @@ function estimateCost(inputTokens: number, outputTokens: number): number {
 
 export function AiUsageDashboard({
   usageLogs,
-  users,
   filters,
 }: AiUsageDashboardProps) {
   const router = useRouter();
@@ -62,10 +58,14 @@ export function AiUsageDashboard({
     } else {
       params.delete(key);
     }
+    // Remove feedback-specific params when updating AI usage filters
+    params.delete("category");
+    params.delete("status");
+    params.delete("tab");
     router.push(`/admin?${params.toString()}`);
   }
 
-  // Compute stats from all logs (not just filtered)
+  // Compute stats from all logs
   const stats = useMemo(() => {
     const now = new Date();
     const todayStart = new Date(now);
@@ -78,8 +78,8 @@ export function AiUsageDashboard({
     let monthCalls = 0;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
-    let platformCalls = 0;
-    let byokCalls = 0;
+    let platformInputTokens = 0;
+    let platformOutputTokens = 0;
 
     for (const log of usageLogs) {
       const logDate = new Date(log.created_at);
@@ -88,8 +88,10 @@ export function AiUsageDashboard({
       if (logDate >= monthAgo) monthCalls++;
       totalInputTokens += log.input_tokens;
       totalOutputTokens += log.output_tokens;
-      if (log.key_type === "platform") platformCalls++;
-      else byokCalls++;
+      if (log.key_type === "platform") {
+        platformInputTokens += log.input_tokens;
+        platformOutputTokens += log.output_tokens;
+      }
     }
 
     return {
@@ -101,48 +103,8 @@ export function AiUsageDashboard({
       totalOutputTokens,
       totalTokens: totalInputTokens + totalOutputTokens,
       estimatedCost: estimateCost(totalInputTokens, totalOutputTokens),
-      platformCalls,
-      byokCalls,
+      platformCost: estimateCost(platformInputTokens, platformOutputTokens),
     };
-  }, [usageLogs]);
-
-  // Per-user stats
-  const userStats = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        calls: number;
-        inputTokens: number;
-        outputTokens: number;
-        keyType: "platform" | "byok" | "mixed";
-        lastUsed: string | null;
-      }
-    >();
-
-    for (const log of usageLogs) {
-      const existing = map.get(log.user_id);
-      if (existing) {
-        existing.calls++;
-        existing.inputTokens += log.input_tokens;
-        existing.outputTokens += log.output_tokens;
-        if (existing.keyType !== log.key_type && existing.keyType !== "mixed") {
-          existing.keyType = "mixed";
-        }
-        if (!existing.lastUsed || log.created_at > existing.lastUsed) {
-          existing.lastUsed = log.created_at;
-        }
-      } else {
-        map.set(log.user_id, {
-          calls: 1,
-          inputTokens: log.input_tokens,
-          outputTokens: log.output_tokens,
-          keyType: log.key_type as "platform" | "byok",
-          lastUsed: log.created_at,
-        });
-      }
-    }
-
-    return map;
   }, [usageLogs]);
 
   return (
@@ -186,10 +148,26 @@ export function AiUsageDashboard({
             </SelectContent>
           </Select>
         </div>
+        <div className="space-y-1">
+          <Label className="text-xs text-muted-foreground">Source</Label>
+          <Select
+            value={filters.source}
+            onValueChange={(v) => updateFilter("source", v)}
+          >
+            <SelectTrigger className="h-8 w-36 text-xs">
+              <SelectValue placeholder="All sources" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All sources</SelectItem>
+              <SelectItem value="platform">Platform</SelectItem>
+              <SelectItem value="byok">BYOK</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard
           icon={<Activity className="h-4 w-4" />}
           label="Total Calls"
@@ -206,44 +184,8 @@ export function AiUsageDashboard({
           icon={<Coins className="h-4 w-4" />}
           label="Est. Cost"
           value={`$${stats.estimatedCost.toFixed(2)}`}
-          detail="$3/M input + $15/M output"
+          detail={`Platform: $${stats.platformCost.toFixed(2)} / BYOK: $${(stats.estimatedCost - stats.platformCost).toFixed(2)}`}
         />
-        <StatCard
-          icon={<Key className="h-4 w-4" />}
-          label="Platform vs BYOK"
-          value={`${stats.platformCalls} / ${stats.byokCalls}`}
-          detail={`${stats.totalCalls > 0 ? Math.round((stats.platformCalls / stats.totalCalls) * 100) : 0}% platform`}
-        />
-      </div>
-
-      {/* User Management Table */}
-      <div>
-        <h2 className="mb-3 text-lg font-semibold">User Management</h2>
-        <div className="rounded-lg border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>User</TableHead>
-                <TableHead className="text-right">Calls</TableHead>
-                <TableHead className="text-right">Tokens</TableHead>
-                <TableHead className="text-right">Est. Cost</TableHead>
-                <TableHead>Key</TableHead>
-                <TableHead className="text-center">AI Enabled</TableHead>
-                <TableHead className="text-center">Daily Limit</TableHead>
-                <TableHead>Last Used</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {users.map((u) => (
-                <AiUserManagementRow
-                  key={u.id}
-                  user={u}
-                  stats={userStats.get(u.id) ?? null}
-                />
-              ))}
-            </TableBody>
-          </Table>
-        </div>
       </div>
 
       {/* Recent Activity */}
@@ -255,8 +197,8 @@ export function AiUsageDashboard({
               <TableRow>
                 <TableHead>User</TableHead>
                 <TableHead>Action</TableHead>
+                <TableHead>Source</TableHead>
                 <TableHead className="text-right">Tokens</TableHead>
-                <TableHead>Key</TableHead>
                 <TableHead>Time</TableHead>
               </TableRow>
             </TableHeader>
@@ -283,18 +225,19 @@ export function AiUsageDashboard({
                       {ACTION_LABELS[log.action_type] ?? log.action_type}
                     </span>
                   </td>
+                  <td className="p-2">
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                      log.key_type === "platform"
+                        ? "bg-amber-500/10 text-amber-500"
+                        : "bg-emerald-500/10 text-emerald-500"
+                    }`}>
+                      {log.key_type === "platform" ? "Platform" : "BYOK"}
+                    </span>
+                  </td>
                   <td className="p-2 text-right">
                     <span className="text-xs text-muted-foreground">
                       {formatNumber(log.input_tokens + log.output_tokens)}
                     </span>
-                  </td>
-                  <td className="p-2">
-                    <Badge
-                      variant={log.key_type === "byok" ? "secondary" : "outline"}
-                      className="text-[10px]"
-                    >
-                      {log.key_type === "byok" ? "BYOK" : "Platform"}
-                    </Badge>
                   </td>
                   <td className="p-2">
                     <span className="text-xs text-muted-foreground">

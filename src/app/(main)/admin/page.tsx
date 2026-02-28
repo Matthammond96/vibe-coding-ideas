@@ -1,29 +1,28 @@
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { AiUsageDashboard } from "@/components/admin/ai-usage-dashboard";
+import { requireAuth } from "@/lib/auth";
+import { AdminTabs } from "@/components/admin/admin-tabs";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Admin: AI Usage - VibeCodes",
+  title: "Admin",
+  robots: { index: false, follow: false },
 };
 
 interface PageProps {
   searchParams: Promise<{
+    tab?: string;
     from?: string;
     to?: string;
     action?: string;
+    source?: string;
+    category?: string;
+    status?: string;
   }>;
 }
 
 export default async function AdminPage({ searchParams }: PageProps) {
-  const { from, to, action } = await searchParams;
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/login");
+  const { tab, from, to, action, source, category, status } = await searchParams;
+  const { user, supabase } = await requireAuth();
 
   // Check admin
   const { data: currentUser } = await supabase
@@ -46,32 +45,53 @@ export default async function AdminPage({ searchParams }: PageProps) {
   if (action && action !== "all") {
     usageQuery = usageQuery.eq(
       "action_type",
-      action as "enhance_description" | "generate_questions" | "enhance_with_context" | "generate_board_tasks"
+      action as "enhance_description" | "generate_questions" | "enhance_with_context" | "generate_board_tasks" | "enhance_task_description"
     );
+  }
+  if (source && source !== "all") {
+    usageQuery = usageQuery.eq("key_type", source as "platform" | "byok");
   }
 
   const { data: usageLogs } = await usageQuery;
 
-  // Fetch all non-bot users with AI fields
-  const { data: allUsers } = await supabase
-    .from("users")
-    .select("id, full_name, email, avatar_url, ai_enabled, ai_daily_limit, encrypted_anthropic_key, is_bot")
-    .eq("is_bot", false)
-    .order("full_name", { ascending: true });
+  // Fetch feedback with filters
+  let feedbackQuery = supabase
+    .from("feedback")
+    .select("*, user:users!feedback_user_id_fkey(id, full_name, email, avatar_url)")
+    .order("created_at", { ascending: false })
+    .limit(500);
+
+  if (category && category !== "all") {
+    feedbackQuery = feedbackQuery.eq("category", category as "bug" | "suggestion" | "question" | "other");
+  }
+  if (status && status !== "all") {
+    feedbackQuery = feedbackQuery.eq("status", status as "new" | "reviewed" | "archived");
+  }
+
+  const { data: feedback } = await feedbackQuery;
+
+  // Count unreviewed feedback for badge
+  const { count: newFeedbackCount } = await supabase
+    .from("feedback")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "new");
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-8">
-      <h1 className="mb-6 text-2xl font-bold">Admin: AI Usage</h1>
-      <AiUsageDashboard
+      <h1 className="mb-6 text-2xl font-bold">Admin</h1>
+      <AdminTabs
+        activeTab={tab ?? "ai-usage"}
         usageLogs={(usageLogs ?? []) as UsageLogWithUser[]}
-        users={(allUsers ?? []) as AdminUser[]}
-        filters={{ from: from ?? "", to: to ?? "", action: action ?? "all" }}
+        usageFilters={{ from: from ?? "", to: to ?? "", action: action ?? "all", source: source ?? "all" }}
+        feedback={(feedback ?? []) as FeedbackWithUser[]}
+        feedbackFilters={{ category: category ?? "all", status: status ?? "all" }}
+        newFeedbackCount={newFeedbackCount ?? 0}
       />
     </div>
   );
 }
 
-// Types for the serialized data passed to the client component
+// Types for the serialized data passed to the client components
 export type UsageLogWithUser = {
   id: string;
   user_id: string;
@@ -90,13 +110,18 @@ export type UsageLogWithUser = {
   };
 };
 
-export type AdminUser = {
+export type FeedbackWithUser = {
   id: string;
-  full_name: string | null;
-  email: string;
-  avatar_url: string | null;
-  ai_enabled: boolean;
-  ai_daily_limit: number;
-  encrypted_anthropic_key: string | null;
-  is_bot: boolean;
+  user_id: string;
+  category: "bug" | "suggestion" | "question" | "other";
+  content: string;
+  page_url: string | null;
+  status: "new" | "reviewed" | "archived";
+  created_at: string;
+  user: {
+    id: string;
+    full_name: string | null;
+    email: string;
+    avatar_url: string | null;
+  };
 };

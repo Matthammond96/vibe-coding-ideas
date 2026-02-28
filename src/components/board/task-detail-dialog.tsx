@@ -1,27 +1,18 @@
 "use client";
 
 import { useState, useRef, useEffect, useMemo } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
-import { Tag, Trash2, Archive, ArchiveRestore, Pencil, X, Bot } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Tag, Trash2, Archive, ArchiveRestore, Pencil, X, Bot, Link2, Sparkles, Loader2, Eye, MessageSquare } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { TaskLabelBadges } from "./task-label-badges";
 import { LabelPicker } from "./label-picker";
 import { DueDatePicker } from "./due-date-picker";
@@ -32,15 +23,11 @@ import { TaskAttachmentsSection } from "./task-attachments-section";
 import { Markdown } from "@/components/ui/markdown";
 import { MentionAutocomplete } from "./mention-autocomplete";
 import { updateBoardTask, deleteBoardTask } from "@/actions/board";
+import { enhanceTaskDescription } from "@/actions/ai";
 import { useBoardOps } from "./board-context";
 import { createClient } from "@/lib/supabase/client";
 import { logTaskActivity } from "@/lib/activity";
-import type {
-  BoardTaskWithAssignee,
-  BoardLabel,
-  BoardChecklistItem,
-  User,
-} from "@/types";
+import type { BoardTaskWithAssignee, BoardLabel, BoardChecklistItem, User } from "@/types";
 
 interface TaskDetailDialogProps {
   open: boolean;
@@ -53,6 +40,8 @@ interface TaskDetailDialogProps {
   currentUserId: string;
   initialTab?: string;
   userBots?: User[];
+  isReadOnly?: boolean;
+  hasApiKey?: boolean;
 }
 
 export function TaskDetailDialog({
@@ -66,6 +55,8 @@ export function TaskDetailDialog({
   currentUserId,
   initialTab,
   userBots = [],
+  isReadOnly = false,
+  hasApiKey = false,
 }: TaskDetailDialogProps) {
   const ops = useBoardOps();
   const [activeTab, setActiveTab] = useState("details");
@@ -76,6 +67,9 @@ export function TaskDetailDialog({
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editingDescription, setEditingDescription] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);
+  const [previewDesc, setPreviewDesc] = useState(false);
+  const skipBlurRef = useRef(false);
   const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // @mention state for description
@@ -85,9 +79,7 @@ export function TaskDetailDialog({
 
   const filteredDescMembers = useMemo(() => {
     if (descMentionQuery === null) return [];
-    return teamMembers.filter((m) =>
-      m.full_name?.toLowerCase().includes(descMentionQuery.toLowerCase())
-    );
+    return teamMembers.filter((m) => m.full_name?.toLowerCase().includes(descMentionQuery.toLowerCase()));
   }, [teamMembers, descMentionQuery]);
 
   const [isArchived, setIsArchived] = useState(task.archived);
@@ -209,14 +201,10 @@ export function TaskDetailDialog({
 
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setDescMentionIndex((prev) =>
-        prev < filteredDescMembers.length - 1 ? prev + 1 : 0
-      );
+      setDescMentionIndex((prev) => (prev < filteredDescMembers.length - 1 ? prev + 1 : 0));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setDescMentionIndex((prev) =>
-        prev > 0 ? prev - 1 : filteredDescMembers.length - 1
-      );
+      setDescMentionIndex((prev) => (prev > 0 ? prev - 1 : filteredDescMembers.length - 1));
     } else if (e.key === "Enter") {
       e.preventDefault();
       handleDescMentionSelect(filteredDescMembers[descMentionIndex]);
@@ -227,7 +215,12 @@ export function TaskDetailDialog({
   }
 
   async function handleDescriptionBlur() {
+    if (skipBlurRef.current) {
+      skipBlurRef.current = false;
+      return;
+    }
     setEditingDescription(false);
+    setPreviewDesc(false);
     setDescMentionQuery(null);
     const newDesc = description.trim() || null;
     if (newDesc === (task.description ?? null)) return;
@@ -255,8 +248,7 @@ export function TaskDetailDialog({
               task_id: task.id,
             })
             .then(({ error }) => {
-              if (error)
-                console.error("Failed to send mention notification:", error.message);
+              if (error) console.error("Failed to send mention notification:", error.message);
             });
         }
       }
@@ -268,6 +260,22 @@ export function TaskDetailDialog({
     }
   }
 
+  const showAiEnhance = hasApiKey && !isReadOnly && editingDescription && description.trim().length > 10;
+
+  async function handleEnhanceDescription() {
+    if (!title.trim() || !description.trim()) return;
+    setEnhancing(true);
+    try {
+      const result = await enhanceTaskDescription(ideaId, title.trim(), description.trim());
+      setDescription(result.enhanced);
+      toast.success("Description enhanced");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to enhance");
+    } finally {
+      setEnhancing(false);
+    }
+  }
+
   async function handleAssigneeChange(value: string) {
     const assigneeId = value === "unassigned" ? null : value;
     setLocalAssigneeId(assigneeId);
@@ -275,8 +283,7 @@ export function TaskDetailDialog({
     try {
       await updateBoardTask(task.id, ideaId, { assignee_id: assigneeId });
       if (assigneeId) {
-        const member = teamMembers.find((m) => m.id === assigneeId)
-          ?? userBots.find((b) => b.id === assigneeId);
+        const member = teamMembers.find((m) => m.id === assigneeId) ?? userBots.find((b) => b.id === assigneeId);
         logTaskActivity(task.id, ideaId, currentUserId, "assigned", {
           assignee_name: member?.full_name ?? "Unknown",
         });
@@ -295,12 +302,7 @@ export function TaskDetailDialog({
     setIsArchived(newArchived);
     try {
       await updateBoardTask(task.id, ideaId, { archived: newArchived });
-      logTaskActivity(
-        task.id,
-        ideaId,
-        currentUserId,
-        newArchived ? "archived" : "unarchived"
-      );
+      logTaskActivity(task.id, ideaId, currentUserId, newArchived ? "archived" : "unarchived");
     } catch {
       // Rollback
       setIsArchived(!newArchived);
@@ -334,9 +336,9 @@ export function TaskDetailDialog({
   }
 
   const localAssignee = localAssigneeId
-    ? teamMembers.find((m) => m.id === localAssigneeId)
-      ?? userBots.find((b) => b.id === localAssigneeId)
-      ?? task.assignee
+    ? (teamMembers.find((m) => m.id === localAssigneeId) ??
+      userBots.find((b) => b.id === localAssigneeId) ??
+      task.assignee)
     : null;
   const assigneeInitials =
     localAssignee?.full_name
@@ -373,11 +375,54 @@ export function TaskDetailDialog({
       .then(({ data }) => {
         if (!cancelled && data?.signedUrl) setCoverUrl(data.signedUrl);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [localCoverPath]);
 
+  async function handleShare() {
+    const url = new URL(window.location.href);
+    url.searchParams.set("taskId", task.id);
+    const shareUrl = url.toString();
+
+    // Try native share API on mobile (if available and has share capability)
+    if (navigator.share && navigator.canShare?.({ url: shareUrl })) {
+      try {
+        await navigator.share({
+          title: task.title,
+          url: shareUrl,
+        });
+        return;
+      } catch (err) {
+        // User cancelled or share failed — fall through to clipboard
+        if ((err as Error).name === "AbortError") return;
+      }
+    }
+
+    // Fallback to clipboard
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      toast.success("Link copied to clipboard");
+    } catch {
+      toast.error("Failed to copy link");
+    }
+  }
+
   return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v && coverPreviewOpen) { setCoverPreviewOpen(false); return; } onOpenChange(v); }}>
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        if (!v && coverPreviewOpen) {
+          setCoverPreviewOpen(false);
+          return;
+        }
+        if (!v && editingDescription) {
+          // Save description when closing dialog while editing (including preview mode)
+          handleDescriptionBlur();
+        }
+        onOpenChange(v);
+      }}
+    >
       <DialogContent
         className="flex max-h-[85vh] flex-col gap-0 p-0 sm:max-w-lg"
         onOpenAutoFocus={(e) => e.preventDefault()}
@@ -388,24 +433,54 @@ export function TaskDetailDialog({
             className="h-40 w-full shrink-0 cursor-zoom-in overflow-hidden"
             onClick={() => setCoverPreviewOpen(true)}
           >
-            <img
-              src={coverUrl}
-              alt=""
-              className="h-full w-full object-cover"
-            />
+            <img src={coverUrl} alt="" className="h-full w-full object-cover" />
           </div>
         )}
 
         {/* Header — always visible */}
         <DialogHeader className={`px-6 pb-0 ${coverUrl ? "pt-4" : "pt-6"}`}>
           <DialogTitle className="sr-only">Task Details</DialogTitle>
-          <Input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={handleTitleBlur}
-            className="border-none p-0 text-lg font-semibold shadow-none focus-visible:ring-0"
-            disabled={savingTitle}
-          />
+          {isReadOnly ? (
+            <div className="flex items-center gap-2">
+              <p className="flex-1 text-lg font-semibold">{task.title}</p>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                    onClick={handleShare}
+                  >
+                    <Link2 className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Copy link</TooltipContent>
+              </Tooltip>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                onBlur={handleTitleBlur}
+                className="flex-1 border-none p-0 text-lg font-semibold shadow-none focus-visible:ring-0"
+                disabled={savingTitle}
+              />
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+                    onClick={handleShare}
+                  >
+                    <Link2 className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Copy link</TooltipContent>
+              </Tooltip>
+            </div>
+          )}
         </DialogHeader>
 
         {/* Tabs */}
@@ -417,17 +492,13 @@ export function TaskDetailDialog({
             <TabsTrigger value="comments" className="text-xs">
               Comments
               {!!commentCount && commentCount > 0 && (
-                <span className="ml-1 rounded-full bg-muted px-1.5 text-[10px]">
-                  {commentCount}
-                </span>
+                <span className="ml-1 rounded-full bg-muted px-1.5 text-[10px]">{commentCount}</span>
               )}
             </TabsTrigger>
             <TabsTrigger value="files" className="text-xs">
               Files
               {!!attachmentCount && attachmentCount > 0 && (
-                <span className="ml-1 rounded-full bg-muted px-1.5 text-[10px]">
-                  {attachmentCount}
-                </span>
+                <span className="ml-1 rounded-full bg-muted px-1.5 text-[10px]">{attachmentCount}</span>
               )}
             </TabsTrigger>
             <TabsTrigger value="activity" className="text-xs">
@@ -442,23 +513,27 @@ export function TaskDetailDialog({
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium">Labels</span>
-                  <LabelPicker
-                    boardLabels={boardLabels}
-                    taskLabels={task.labels}
-                    taskId={task.id}
-                    ideaId={ideaId}
-                    currentUserId={currentUserId}
-                    inDialog
-                  >
-                    <Button variant="outline" size="sm" className="h-6 gap-1 text-xs">
-                      <Tag className="h-3 w-3" />
-                      Edit
-                    </Button>
-                  </LabelPicker>
+                  {!isReadOnly && (
+                    <LabelPicker
+                      boardLabels={boardLabels}
+                      taskLabels={task.labels}
+                      taskId={task.id}
+                      ideaId={ideaId}
+                      currentUserId={currentUserId}
+                      inDialog
+                    >
+                      <Button variant="outline" size="sm" className="h-6 gap-1 text-xs">
+                        <Tag className="h-3 w-3" />
+                        Edit
+                      </Button>
+                    </LabelPicker>
+                  )}
                 </div>
-                {task.labels.length > 0 && (
+                {task.labels.length > 0 ? (
                   <TaskLabelBadges labels={task.labels} maxVisible={6} />
-                )}
+                ) : isReadOnly ? (
+                  <p className="text-xs text-muted-foreground">None</p>
+                ) : null}
               </div>
 
               {/* Assignee & Due Date row */}
@@ -470,63 +545,86 @@ export function TaskDetailDialog({
                       <div className="relative">
                         <Avatar className="h-6 w-6">
                           <AvatarImage src={localAssignee.avatar_url ?? undefined} />
-                          <AvatarFallback className="text-[10px]">
-                            {assigneeInitials}
-                          </AvatarFallback>
+                          <AvatarFallback className="text-[10px]">{assigneeInitials}</AvatarFallback>
                         </Avatar>
                         {localAssignee.is_bot && (
                           <Bot className="absolute -bottom-0.5 -right-0.5 h-3 w-3 text-primary" />
                         )}
                       </div>
                     )}
-                    <Select
-                      value={localAssigneeId ?? "unassigned"}
-                      onValueChange={handleAssigneeChange}
-                    >
-                      <SelectTrigger className="h-8 w-40 text-xs">
-                        <SelectValue placeholder="Unassigned" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="unassigned">Unassigned</SelectItem>
-                        {teamMembers.map((member) => (
-                          <SelectItem key={member.id} value={member.id}>
-                            {member.full_name ?? member.email}
-                          </SelectItem>
-                        ))}
-                        {userBots.length > 0 && (
-                          <>
-                            <div className="px-2 py-1.5 text-[10px] font-medium text-muted-foreground">
-                              My Bots
-                            </div>
-                            {userBots
-                              .filter((b) => !teamMembers.some((m) => m.id === b.id))
-                              .map((bot) => (
-                                <SelectItem key={bot.id} value={bot.id}>
-                                  <span className="inline-flex items-center gap-1">
-                                    <Bot className="h-3 w-3" />
-                                    {bot.full_name ?? bot.email}
-                                  </span>
-                                </SelectItem>
-                              ))}
-                          </>
-                        )}
-                      </SelectContent>
-                    </Select>
+                    {isReadOnly ? (
+                      <span className="text-xs">
+                        {localAssignee?.full_name ?? "Unassigned"}
+                      </span>
+                    ) : (
+                      <Select
+                        value={localAssigneeId ?? "unassigned"}
+                        onValueChange={handleAssigneeChange}
+                      >
+                        <SelectTrigger className="h-8 w-40 text-xs">
+                          <SelectValue placeholder="Unassigned" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="unassigned">Unassigned</SelectItem>
+                          {teamMembers.map((member) => (
+                            <SelectItem key={member.id} value={member.id}>
+                              {member.full_name ?? member.email}
+                            </SelectItem>
+                          ))}
+                          {userBots.length > 0 && (
+                            <>
+                              <div className="px-2 py-1.5 text-[10px] font-medium text-muted-foreground">
+                                My Agents
+                              </div>
+                              {userBots
+                                .filter((b) => !teamMembers.some((m) => m.id === b.id))
+                                .map((bot) => (
+                                  <SelectItem key={bot.id} value={bot.id}>
+                                    <span className="inline-flex items-center gap-1">
+                                      <Bot className="h-3 w-3" />
+                                      {bot.full_name ?? bot.email}
+                                    </span>
+                                  </SelectItem>
+                                ))}
+                            </>
+                          )}
+                        </SelectContent>
+                      </Select>
+                    )}
                   </div>
                 </div>
 
                 <div className="space-y-1.5">
                   <span className="text-sm font-medium">Due Date</span>
                   <div className="flex items-center gap-2">
-                    <DueDatePicker
-                      taskId={task.id}
-                      ideaId={ideaId}
-                      dueDate={task.due_date}
-                      currentUserId={currentUserId}
-                    />
+                    {isReadOnly ? (
+                      <span className="text-xs">
+                        {task.due_date
+                          ? new Date(task.due_date).toLocaleDateString()
+                          : "None"}
+                      </span>
+                    ) : (
+                      <DueDatePicker
+                        taskId={task.id}
+                        ideaId={ideaId}
+                        dueDate={task.due_date}
+                        currentUserId={currentUserId}
+                      />
+                    )}
                   </div>
                 </div>
               </div>
+
+              {/* Discussion backlink */}
+              {task.discussion_id && (
+                <Link
+                  href={`/ideas/${ideaId}/discussions/${task.discussion_id}`}
+                  className="flex items-center gap-2 rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 text-xs text-blue-400 hover:bg-blue-500/10"
+                >
+                  <MessageSquare className="h-3.5 w-3.5" />
+                  From discussion &mdash; View source thread
+                </Link>
+              )}
 
               <Separator />
 
@@ -534,45 +632,100 @@ export function TaskDetailDialog({
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium">Description</span>
-                  {!editingDescription && description && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 gap-1 text-xs text-muted-foreground"
-                      onClick={() => {
-                        setEditingDescription(true);
-                        requestAnimationFrame(() => {
-                          descriptionTextareaRef.current?.focus();
-                        });
-                      }}
-                    >
-                      <Pencil className="h-3 w-3" />
-                      Edit
-                    </Button>
-                  )}
-                </div>
-                {editingDescription ? (
-                  <div className="relative">
-                    {descMentionQuery !== null && (
-                      <MentionAutocomplete
-                        filteredMembers={filteredDescMembers}
-                        selectedIndex={descMentionIndex}
-                        onSelect={handleDescMentionSelect}
-                      />
+                  <div className="flex items-center gap-1">
+                    {showAiEnhance && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 gap-1 px-2 text-xs text-muted-foreground"
+                        onMouseDown={() => { skipBlurRef.current = true; }}
+                        onClick={handleEnhanceDescription}
+                        disabled={enhancing}
+                        title="Enhance with AI"
+                      >
+                        {enhancing ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Sparkles className="h-3 w-3" />
+                        )}
+                        {enhancing ? "Enhancing..." : "Enhance"}
+                      </Button>
                     )}
-                    <Textarea
-                      ref={descriptionTextareaRef}
-                      value={description}
-                      onChange={handleDescInputChange}
-                      onKeyDown={handleDescKeyDown}
-                      onBlur={handleDescriptionBlur}
-                      placeholder="Add a description... (@ to mention, supports markdown)"
-                      rows={6}
-                      className="text-sm"
-                      disabled={savingDesc}
-                      autoFocus
-                    />
+                    {!isReadOnly && editingDescription && description.trim() && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 gap-1 px-2 text-xs text-muted-foreground"
+                        onMouseDown={() => { skipBlurRef.current = true; }}
+                        onClick={() => setPreviewDesc((v) => !v)}
+                      >
+                        {previewDesc ? (
+                          <><Pencil className="h-3 w-3" /> Write</>
+                        ) : (
+                          <><Eye className="h-3 w-3" /> Preview</>
+                        )}
+                      </Button>
+                    )}
+                    {!isReadOnly && !editingDescription && description && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 gap-1 text-xs text-muted-foreground"
+                        onClick={() => {
+                          setEditingDescription(true);
+                          setPreviewDesc(false);
+                          requestAnimationFrame(() => {
+                            descriptionTextareaRef.current?.focus();
+                          });
+                        }}
+                      >
+                        <Pencil className="h-3 w-3" />
+                        Edit
+                      </Button>
+                    )}
                   </div>
+                </div>
+                {isReadOnly ? (
+                  description ? (
+                    <div className="rounded-md px-3 py-2 text-sm">
+                      <Markdown teamMembers={teamMembers}>{description}</Markdown>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No description</p>
+                  )
+                ) : editingDescription ? (
+                  previewDesc ? (
+                    <div
+                      className="min-h-[156px] rounded-md border border-input px-3 py-2 text-sm"
+                      onBlur={handleDescriptionBlur}
+                    >
+                      <Markdown teamMembers={teamMembers}>{description}</Markdown>
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      {descMentionQuery !== null && (
+                        <MentionAutocomplete
+                          filteredMembers={filteredDescMembers}
+                          selectedIndex={descMentionIndex}
+                          onSelect={handleDescMentionSelect}
+                        />
+                      )}
+                      <Textarea
+                        ref={descriptionTextareaRef}
+                        value={description}
+                        onChange={handleDescInputChange}
+                        onKeyDown={handleDescKeyDown}
+                        onBlur={handleDescriptionBlur}
+                        placeholder="Add a description... (@ to mention, supports markdown)"
+                        rows={6}
+                        className="text-sm"
+                        disabled={savingDesc}
+                        autoFocus
+                      />
+                    </div>
+                  )
                 ) : description ? (
                   <div
                     className="cursor-pointer rounded-md border border-transparent px-3 py-2 text-sm transition-colors hover:border-border hover:bg-muted/50"
@@ -583,7 +736,7 @@ export function TaskDetailDialog({
                       });
                     }}
                   >
-                    <Markdown>{description}</Markdown>
+                    <Markdown teamMembers={teamMembers}>{description}</Markdown>
                   </div>
                 ) : (
                   <div
@@ -608,6 +761,7 @@ export function TaskDetailDialog({
                 taskId={task.id}
                 ideaId={ideaId}
                 currentUserId={currentUserId}
+                isReadOnly={isReadOnly}
               />
             </div>
           </TabsContent>
@@ -619,6 +773,8 @@ export function TaskDetailDialog({
               ideaId={ideaId}
               currentUserId={currentUserId}
               teamMembers={teamMembers}
+              userBotIds={userBots.map((b) => b.id)}
+              isReadOnly={isReadOnly}
             />
           </TabsContent>
 
@@ -630,6 +786,7 @@ export function TaskDetailDialog({
               currentUserId={currentUserId}
               coverImagePath={localCoverPath}
               onCoverChange={setLocalCoverPath}
+              isReadOnly={isReadOnly}
             />
           </TabsContent>
 
@@ -639,37 +796,39 @@ export function TaskDetailDialog({
           </TabsContent>
         </Tabs>
 
-        {/* Footer — always visible */}
-        <div className="flex justify-between border-t border-border px-6 py-3">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 text-muted-foreground"
-            onClick={handleArchiveToggle}
-          >
-            {isArchived ? (
-              <>
-                <ArchiveRestore className="h-3.5 w-3.5" />
-                Unarchive
-              </>
-            ) : (
-              <>
-                <Archive className="h-3.5 w-3.5" />
-                Archive
-              </>
-            )}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={`gap-1.5 ${confirmDelete ? "text-destructive font-medium" : "text-muted-foreground"}`}
-            onClick={handleDeleteClick}
-            disabled={deleting}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {deleting ? "Deleting..." : confirmDelete ? "Are you sure?" : "Delete task"}
-          </Button>
-        </div>
+        {/* Footer — hidden for read-only guests */}
+        {!isReadOnly && (
+          <div className="flex justify-between border-t border-border px-6 py-3">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5 text-muted-foreground"
+              onClick={handleArchiveToggle}
+            >
+              {isArchived ? (
+                <>
+                  <ArchiveRestore className="h-3.5 w-3.5" />
+                  Unarchive
+                </>
+              ) : (
+                <>
+                  <Archive className="h-3.5 w-3.5" />
+                  Archive
+                </>
+              )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className={`gap-1.5 ${confirmDelete ? "text-destructive font-medium" : "text-muted-foreground"}`}
+              onClick={handleDeleteClick}
+              disabled={deleting}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {deleting ? "Deleting..." : confirmDelete ? "Are you sure?" : "Delete task"}
+            </Button>
+          </div>
+        )}
         {/* Cover image lightbox — inside DialogContent so Radix focus trap allows clicks */}
         {coverPreviewOpen && coverUrl && (
           <div
@@ -680,7 +839,10 @@ export function TaskDetailDialog({
               variant="ghost"
               size="icon"
               className="absolute right-4 top-4 text-white hover:bg-white/20"
-              onClick={(e) => { e.stopPropagation(); setCoverPreviewOpen(false); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setCoverPreviewOpen(false);
+              }}
             >
               <X className="h-5 w-5" />
             </Button>

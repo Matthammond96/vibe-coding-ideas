@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Search, X, ChevronLeft, ChevronRight } from "lucide-react";
+import Link from "next/link";
+import { Search, X, ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
 import { IdeaCard } from "./idea-card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -56,6 +57,7 @@ export function IdeaFeed({
   const searchParams = useSearchParams();
   const [searchInput, setSearchInput] = useState(currentSearch);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [isPending, startTransition] = useTransition();
 
   const updateParams = useCallback((updates: Record<string, string>) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -70,8 +72,10 @@ export function IdeaFeed({
     if (!("page" in updates)) {
       params.delete("page");
     }
-    router.push(`/feed?${params.toString()}`);
-  }, [searchParams, router]);
+    startTransition(() => {
+      router.push(`/ideas?${params.toString()}`);
+    });
+  }, [searchParams, router, startTransition]);
 
   // Debounced search on keystroke
   useEffect(() => {
@@ -82,6 +86,19 @@ export function IdeaFeed({
     }, 300);
     return () => clearTimeout(debounceRef.current);
   }, [searchInput, currentSearch, updateParams]);
+
+  // Client-side filtering for instant feedback while server search is in-flight
+  const filteredIdeas = useMemo(() => {
+    // If input matches current server search, use server results as-is
+    if (!searchInput || searchInput === currentSearch) return ideas;
+    // Otherwise, instantly filter the loaded ideas client-side
+    const q = searchInput.toLowerCase();
+    return ideas.filter(
+      (idea) =>
+        idea.title.toLowerCase().includes(q) ||
+        idea.description?.toLowerCase().includes(q)
+    );
+  }, [ideas, searchInput, currentSearch]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -156,7 +173,11 @@ export function IdeaFeed({
       {/* Search bar */}
       <form onSubmit={handleSearch} className="mb-4">
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          {isPending ? (
+            <Loader2 className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+          ) : (
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          )}
           <Input
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
@@ -230,7 +251,7 @@ export function IdeaFeed({
       )}
 
       {/* Ideas list */}
-      {ideas.length === 0 ? (
+      {filteredIdeas.length === 0 ? (
         <div className="py-16 text-center">
           <p className="text-lg text-muted-foreground">
             {currentSearch || currentTag || currentStatus || currentView !== "all"
@@ -241,10 +262,47 @@ export function IdeaFeed({
                   : "No ideas match your filters."
               : "No ideas yet. Be the first to share one!"}
           </p>
+          {currentView === "mine" && (
+            <Link href="/ideas/new">
+              <Button variant="outline" size="sm" className="mt-4">
+                Share an idea
+              </Button>
+            </Link>
+          )}
+          {currentView === "collaborating" && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              onClick={() => updateParams({ view: "" })}
+            >
+              Browse ideas
+            </Button>
+          )}
+          {currentView === "all" && !currentSearch && !currentTag && !currentStatus && (
+            <Link href="/ideas/new">
+              <Button variant="outline" size="sm" className="mt-4">
+                Share the first idea
+              </Button>
+            </Link>
+          )}
+          {(currentSearch || currentTag || currentStatus) && currentView === "all" && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              onClick={() => {
+                clearSearch();
+                updateParams({ tag: "", status: "", q: "" });
+              }}
+            >
+              Clear filters
+            </Button>
+          )}
         </div>
       ) : (
         <div className="space-y-4">
-          {ideas.map((idea) => (
+          {filteredIdeas.map((idea) => (
             <IdeaCard
               key={idea.id}
               idea={idea}

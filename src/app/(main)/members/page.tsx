@@ -1,10 +1,14 @@
-import { createClient } from "@/lib/supabase/server";
+import { requireAuth } from "@/lib/auth";
 import { MemberDirectory } from "@/components/members/member-directory";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Members - VibeCodes",
-  description: "Browse and search VibeCodes community members",
+  title: "Members",
+  description: "Browse and search VibeCodes community members.",
+  openGraph: {
+    title: "Members",
+    description: "Browse and search VibeCodes community members.",
+  },
 };
 
 const PAGE_SIZE = 12;
@@ -20,22 +24,15 @@ export default async function MembersPage({
   const search = params.q || "";
   const sort = (params.sort as MemberSort) || "newest";
   const page = Math.max(1, parseInt(params.page || "1", 10));
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { user, supabase } = await requireAuth();
 
   // Check if current user is admin
-  let isAdmin = false;
-  if (user) {
-    const { data: profile } = await supabase
-      .from("users")
-      .select("is_admin")
-      .eq("id", user.id)
-      .single();
-    isAdmin = profile?.is_admin ?? false;
-  }
+  const { data: profile } = await supabase
+    .from("users")
+    .select("is_admin")
+    .eq("id", user.id)
+    .single();
+  const isAdmin = profile?.is_admin ?? false;
 
   // Build query — exclude bots
   let query = supabase
@@ -57,8 +54,8 @@ export default async function MembersPage({
 
   // Fetch idea and collaboration counts for all members
   const memberIds = (members ?? []).map((m) => m.id);
-  let ideaCounts: Record<string, number> = {};
-  let collabCounts: Record<string, number> = {};
+  const ideaCounts: Record<string, number> = {};
+  const collabCounts: Record<string, number> = {};
 
   if (memberIds.length > 0) {
     const [ideasResult, collabsResult] = await Promise.all([

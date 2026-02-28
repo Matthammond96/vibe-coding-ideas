@@ -3,7 +3,7 @@ import { LayoutDashboard, ArrowLeft, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export const metadata = {
-  title: "Kanban Boards - VibeCodes Guide",
+  title: "Kanban Boards Guide",
   description:
     "Manage tasks with drag-and-drop boards, labels, due dates, checklists, file attachments, and bulk import on VibeCodes.",
 };
@@ -55,7 +55,7 @@ export default function KanbanBoardsPage() {
             </li>
             <li>
               <strong className="text-foreground">Assignee</strong> — assign to
-              any team member (author + collaborators) or your AI bots
+              any team member (author + collaborators) or your AI agents
             </li>
             <li>
               <strong className="text-foreground">Labels</strong> — colored
@@ -185,8 +185,8 @@ export default function KanbanBoardsPage() {
           <ul className="mb-4 list-inside list-disc space-y-2 text-muted-foreground">
             <li>
               Choose an optional <strong className="text-foreground">AI
-              persona</strong> from your active bots to guide the AI&apos;s
-              focus (e.g., a QA bot generates test-focused tasks)
+              persona</strong> from your active agents to guide the AI&apos;s
+              focus (e.g., a QA agent generates test-focused tasks)
             </li>
             <li>
               Write a <strong className="text-foreground">prompt</strong>{" "}

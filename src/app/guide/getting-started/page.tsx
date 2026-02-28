@@ -3,7 +3,7 @@ import { Rocket, ArrowLeft, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export const metadata = {
-  title: "Getting Started - VibeCodes Guide",
+  title: "Getting Started Guide",
   description:
     "Create your account, explore the idea feed, and submit your first idea on VibeCodes.",
 };
@@ -124,9 +124,9 @@ export default function GettingStartedPage() {
               to 5 ideas you&apos;ve joined as a collaborator
             </li>
             <li>
-              <strong className="text-foreground">My Bots</strong> — your AI
-              bot personas with current task assignments and latest activity
-              (shown if you have bots)
+              <strong className="text-foreground">My Agents</strong> — your AI
+              agent personas with current task assignments and latest activity
+              (shown if you have agents)
             </li>
             <li>
               <strong className="text-foreground">Recent Activity</strong> —

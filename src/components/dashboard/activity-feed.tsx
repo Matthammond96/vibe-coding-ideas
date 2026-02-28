@@ -3,29 +3,69 @@
 import { useState } from "react";
 import Link from "next/link";
 import { MessageSquare, ChevronUp, Users, Trash2, ArrowRightLeft, AtSign } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatRelativeTime } from "@/lib/utils";
 import type { NotificationWithDetails } from "@/types";
 
 const INITIAL_LIMIT = 5;
 
-const iconMap = {
-  comment: MessageSquare,
-  vote: ChevronUp,
-  collaborator: Users,
-  user_deleted: Trash2,
-  status_change: ArrowRightLeft,
-  task_mention: AtSign,
-};
+function getIcon(type: string): LucideIcon {
+  switch (type) {
+    case "comment":
+      return MessageSquare;
+    case "vote":
+      return ChevronUp;
+    case "collaborator":
+    case "collaboration_request":
+    case "collaboration_response":
+      return Users;
+    case "user_deleted":
+      return Trash2;
+    case "status_change":
+      return ArrowRightLeft;
+    case "task_mention":
+    case "comment_mention":
+    case "discussion_mention":
+      return AtSign;
+    case "discussion":
+    case "discussion_reply":
+      return MessageSquare;
+    default:
+      return MessageSquare;
+  }
+}
 
-const messageMap = {
-  comment: "commented on",
-  vote: "voted on",
-  collaborator: "joined as collaborator on",
-  user_deleted: "removed an idea you were collaborating on",
-  status_change: "updated the status of",
-  task_mention: "mentioned you in a task on",
-};
+function getMessage(type: string): string {
+  switch (type) {
+    case "comment":
+      return "commented on";
+    case "vote":
+      return "voted on";
+    case "collaborator":
+      return "joined as collaborator on";
+    case "user_deleted":
+      return "removed an idea you were collaborating on";
+    case "status_change":
+      return "updated the status of";
+    case "task_mention":
+      return "mentioned you in a task on";
+    case "comment_mention":
+      return "mentioned you in a comment on";
+    case "discussion_mention":
+      return "mentioned you in a discussion on";
+    case "discussion":
+      return "started a discussion on";
+    case "discussion_reply":
+      return "replied to a discussion on";
+    case "collaboration_request":
+      return "requested to collaborate on";
+    case "collaboration_response":
+      return "responded to your collaboration request on";
+    default:
+      return "interacted with";
+  }
+}
 
 interface ActivityFeedProps {
   notifications: NotificationWithDetails[];
@@ -36,46 +76,41 @@ export function ActivityFeed({ notifications }: ActivityFeedProps) {
 
   if (notifications.length === 0) {
     return (
-      <p className="py-4 text-center text-sm text-muted-foreground">
-        No recent activity.
-      </p>
+      <div className="py-4 text-center">
+        <p className="text-sm text-muted-foreground">
+          No recent activity.
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Activity shows up when others vote, comment, or collaborate on your ideas.
+        </p>
+      </div>
     );
   }
 
   const visibleNotifications =
-    showAll || notifications.length <= INITIAL_LIMIT
-      ? notifications
-      : notifications.slice(0, INITIAL_LIMIT);
+    showAll || notifications.length <= INITIAL_LIMIT ? notifications : notifications.slice(0, INITIAL_LIMIT);
 
   return (
     <div className="space-y-1">
       {visibleNotifications.map((notification) => {
-        const Icon = iconMap[notification.type];
+        const Icon = getIcon(notification.type);
         const content = (
           <div className="flex items-start gap-3">
             <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
             <div className="flex-1 min-w-0">
               <p className="text-sm">
-                <span className="font-medium">
-                  {notification.actor.full_name ?? "Someone"}
-                </span>{" "}
-                {messageMap[notification.type]}
+                <span className="font-medium">{notification.actor.full_name ?? "Someone"}</span>{" "}
+                {getMessage(notification.type)}
                 {notification.idea && (
                   <>
                     {" "}
-                    <span className="font-medium">
-                      {notification.idea.title}
-                    </span>
+                    <span className="font-medium">{notification.idea.title}</span>
                   </>
                 )}
               </p>
-              <p className="text-xs text-muted-foreground">
-                {formatRelativeTime(notification.created_at)}
-              </p>
+              <p className="text-xs text-muted-foreground">{formatRelativeTime(notification.created_at)}</p>
             </div>
-            {!notification.read && (
-              <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary" />
-            )}
+            {!notification.read && <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary" />}
           </div>
         );
 
@@ -84,16 +119,16 @@ export function ActivityFeed({ notifications }: ActivityFeedProps) {
         }`;
 
         if (notification.idea_id) {
-          const href =
-            notification.type === "task_mention"
-              ? `/ideas/${notification.idea_id}/board${notification.task_id ? `?taskId=${notification.task_id}` : ""}`
-              : `/ideas/${notification.idea_id}`;
+          let href: string;
+          if (notification.task_id) {
+            href = `/ideas/${notification.idea_id}/board?taskId=${notification.task_id}`;
+          } else if (notification.discussion_id) {
+            href = `/ideas/${notification.idea_id}/discussions/${notification.discussion_id}`;
+          } else {
+            href = `/ideas/${notification.idea_id}`;
+          }
           return (
-            <Link
-              key={notification.id}
-              href={href}
-              className={`block ${className}`}
-            >
+            <Link key={notification.id} href={href} className={`block ${className}`}>
               {content}
             </Link>
           );

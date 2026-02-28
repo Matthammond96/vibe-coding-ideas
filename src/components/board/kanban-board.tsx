@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo, useRef, useEffect } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect, createContext, type RefObject } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -17,12 +17,12 @@ import {
   type DragOverEvent,
   type CollisionDetection,
 } from "@dnd-kit/core";
-import React from "react";
 import {
   SortableContext,
   horizontalListSortingStrategy,
   arrayMove,
 } from "@dnd-kit/sortable";
+import { useSearchParams } from "next/navigation";
 import { BoardColumn } from "./board-column";
 import { AddColumnButton } from "./add-column-button";
 import { BoardToolbar } from "./board-toolbar";
@@ -39,36 +39,61 @@ import type {
   BoardChecklistItem,
   User,
   BotProfile,
-  AiCredits,
 } from "@/types";
 
-// Custom collision detection: pointerWithin finds the column, closestCenter picks task position
+// Context for auto-open state — bypasses memo chain so task cards can react to URL navigation
+export const TaskAutoOpenContext = createContext<{
+  autoOpenTaskId: string | undefined;
+  onAutoOpenConsumed: () => void;
+}>({ autoOpenTaskId: undefined, onAutoOpenConsumed: () => {} });
+
+// Custom collision detection: pointerWithin finds the column, closestCenter bridges gaps
 const multiContainerCollision: CollisionDetection = (args) => {
-  // First check if pointer is within any droppable (columns)
+  // First check if pointer is within any droppable (columns/tasks)
   const pointerCollisions = pointerWithin(args);
   if (pointerCollisions.length > 0) {
     return pointerCollisions;
   }
-  // Fallback to closestCenter for edge cases (fast moves, keyboard nav)
-  return closestCenter(args);
+  // Fallback to closestCenter for gap zones between columns, fast moves, and keyboard nav
+  const closest = closestCenter(args);
+  // When in a gap, closestCenter may return a column — prefer column droppables
+  // to avoid snapping to far-away tasks
+  if (closest.length > 0) {
+    const containerMap = new Map(args.droppableContainers.map((c) => [c.id, c]));
+    const columnHits = closest.filter((c) => {
+      const data = containerMap.get(c.id)?.data?.current;
+      return data?.type === "column";
+    });
+    return columnHits.length > 0 ? columnHits : closest;
+  }
+  return closest;
 };
 
 const layoutMeasuring = {
-  droppable: { strategy: MeasuringStrategy.WhileDragging },
+  droppable: { strategy: MeasuringStrategy.Always },
 };
 
-// Memoized overlay — prevents parent re-renders from cascading on every drag frame
-const OverlayContent = React.memo(function OverlayContent({
+// Overlay content — intentionally NOT wrapped in React.memo because DragOverlay's
+// portal mounts lazily on first drag. React.memo can prevent the overlay from
+// rendering the task on the initial mount when the portal and setActiveTask batch together.
+function OverlayContent({
   activeTask,
   activeColumn,
+  targetColumnName,
 }: {
   activeTask: BoardTaskWithAssignee | null;
   activeColumn: BoardColumnWithTasks | null;
+  targetColumnName?: string | null;
 }) {
   if (activeTask) {
     return (
       <div className="w-[280px] rounded-md border border-primary bg-background p-3 shadow-lg">
-        <p className="text-sm font-medium">{activeTask.title}</p>
+        <p className="text-sm font-medium line-clamp-2">{activeTask.title}</p>
+        {targetColumnName && (
+          <p className="mt-1 text-xs text-primary">
+            → {targetColumnName}
+          </p>
+        )}
       </div>
     );
   }
@@ -83,7 +108,7 @@ const OverlayContent = React.memo(function OverlayContent({
     );
   }
   return null;
-});
+}
 
 interface KanbanBoardProps {
   columns: BoardColumnWithTasks[];
@@ -95,10 +120,102 @@ interface KanbanBoardProps {
   currentUserId: string;
   initialTaskId?: string;
   userBots?: User[];
-  aiEnabled?: boolean;
+  hasApiKey?: boolean;
   botProfiles?: BotProfile[];
-  aiCredits?: AiCredits | null;
   coverImageUrls?: Record<string, string>;
+  isReadOnly?: boolean;
+}
+
+// Edge-scroll constants
+const EDGE_ZONE = 100;   // px from container edge that triggers scrolling
+const MAX_SPEED = 25;    // max px per frame at the very edge
+
+/**
+ * Continuous rAF-based edge scroll that works for BOTH mouse and touch drags.
+ * Tracks pointer position via capture-phase listeners and scrolls:
+ * 1. The board container horizontally when near left/right edges
+ * 2. The column task list vertically when near top/bottom edges
+ *
+ * Speed ramps linearly from 0 at the inner boundary to MAX_SPEED at the outer
+ * edge. Touch input uses a square-root curve for faster pickup (fingers can't
+ * travel past the screen edge, so linear ramp feels sluggish).
+ */
+function useEdgeScroll(
+  scrollContainerRef: RefObject<HTMLDivElement | null>,
+  isDragging: boolean,
+) {
+  const pointerRef = useRef<{ x: number; y: number; isTouch: boolean } | null>(null);
+
+  useEffect(() => {
+    if (!isDragging) {
+      pointerRef.current = null;
+      return;
+    }
+
+    // Track pointer position via capture phase so we get coordinates even when
+    // @dnd-kit calls preventDefault on the events
+    const onPointer = (e: PointerEvent) => {
+      pointerRef.current = { x: e.clientX, y: e.clientY, isTouch: e.pointerType === "touch" };
+    };
+    const onTouch = (e: TouchEvent) => {
+      const t = e.touches[0] ?? e.changedTouches[0];
+      if (t) pointerRef.current = { x: t.clientX, y: t.clientY, isTouch: true };
+    };
+
+    window.addEventListener("pointermove", onPointer, { capture: true, passive: true });
+    window.addEventListener("touchmove", onTouch, { capture: true, passive: true });
+
+    let raf = 0;
+    const loop = () => {
+      const el = scrollContainerRef.current;
+      const pos = pointerRef.current;
+      if (el && pos) {
+        const rect = el.getBoundingClientRect();
+
+        // Horizontal scroll (board container)
+        let hLinear = 0;
+        let hDirection = 0;
+        if (pos.x > rect.right - EDGE_ZONE) {
+          hLinear = Math.min(1, (pos.x - (rect.right - EDGE_ZONE)) / EDGE_ZONE);
+          hDirection = 1;
+        } else if (pos.x < rect.left + EDGE_ZONE) {
+          hLinear = Math.min(1, ((rect.left + EDGE_ZONE) - pos.x) / EDGE_ZONE);
+          hDirection = -1;
+        }
+        if (hDirection !== 0) {
+          const t = pos.isTouch ? Math.sqrt(hLinear) : hLinear;
+          el.scrollLeft += hDirection * MAX_SPEED * t;
+        }
+
+        // Vertical scroll (column task list under pointer)
+        const colEl = document.elementFromPoint(pos.x, pos.y)?.closest<HTMLElement>(".overflow-y-auto");
+        if (colEl) {
+          const colRect = colEl.getBoundingClientRect();
+          let vLinear = 0;
+          let vDirection = 0;
+          if (pos.y > colRect.bottom - EDGE_ZONE) {
+            vLinear = Math.min(1, (pos.y - (colRect.bottom - EDGE_ZONE)) / EDGE_ZONE);
+            vDirection = 1;
+          } else if (pos.y < colRect.top + EDGE_ZONE) {
+            vLinear = Math.min(1, ((colRect.top + EDGE_ZONE) - pos.y) / EDGE_ZONE);
+            vDirection = -1;
+          }
+          if (vDirection !== 0) {
+            const t = pos.isTouch ? Math.sqrt(vLinear) : vLinear;
+            colEl.scrollTop += vDirection * MAX_SPEED * t;
+          }
+        }
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("pointermove", onPointer, { capture: true });
+      window.removeEventListener("touchmove", onTouch, { capture: true });
+    };
+  }, [isDragging, scrollContainerRef]);
 }
 
 export function KanbanBoard({
@@ -111,22 +228,51 @@ export function KanbanBoard({
   currentUserId,
   initialTaskId,
   userBots = [],
-  aiEnabled = false,
+  hasApiKey = false,
   botProfiles = [],
-  aiCredits,
   coverImageUrls = {},
+  isReadOnly = false,
 }: KanbanBoardProps) {
+  // Auto-open: detect taskId from URL navigation (Link clicks) as well as server props.
+  // useSearchParams reacts to Link navigations, which may not propagate through server
+  // props when the board is already mounted (memo chain can block the update).
+  const searchParams = useSearchParams();
+  const urlTaskId = searchParams.get("taskId") ?? undefined;
+  const [autoOpenTaskId, setAutoOpenTaskId] = useState<string | undefined>(initialTaskId);
+
+  // Sync with server-provided initialTaskId (handles initial page load)
+  useEffect(() => {
+    if (initialTaskId) {
+      setAutoOpenTaskId(initialTaskId);
+    }
+  }, [initialTaskId]);
+
+  // Sync with URL changes from client-side Link navigations (notification clicks)
+  useEffect(() => {
+    if (urlTaskId) {
+      setAutoOpenTaskId(urlTaskId);
+    }
+  }, [urlTaskId]);
+
+  // Clear auto-open state once the dialog has been opened and then closed
+  const handleAutoOpenConsumed = useCallback(() => {
+    setAutoOpenTaskId(undefined);
+  }, []);
+
+  const autoOpenCtx = useMemo(
+    () => ({ autoOpenTaskId, onAutoOpenConsumed: handleAutoOpenConsumed }),
+    [autoOpenTaskId, handleAutoOpenConsumed]
+  );
+
   const [columns, setColumns] = useState(initialColumns);
   const columnsRef = useRef(columns);
   columnsRef.current = columns;
-  const [activeTask, setActiveTask] = useState<BoardTaskWithAssignee | null>(
-    null
-  );
-  const [activeColumn, setActiveColumn] =
-    useState<BoardColumnWithTasks | null>(null);
+  const [activeTask, setActiveTask] = useState<BoardTaskWithAssignee | null>(null);
+  const [activeColumn, setActiveColumn] = useState<BoardColumnWithTasks | null>(null);
   const dragSourceColumnRef = useRef<string | null>(null);
   const dragCurrentColumnRef = useRef<string | null>(null);
-  const lastOverColumnRef = useRef<string | null>(null);
+  const [dragTargetColumnName, setDragTargetColumnName] = useState<string | null>(null);
+  const [dragOverColumnId, setDragOverColumnId] = useState<string | null>(null);
   // Snapshot of columns at drag start — used for immediate revert on cancel
   const dragStartColumnsRef = useRef<BoardColumnWithTasks[] | null>(null);
 
@@ -156,6 +302,10 @@ export function KanbanBoard({
     window.addEventListener("resize", handleScrollCheck);
     return () => window.removeEventListener("resize", handleScrollCheck);
   }, [handleScrollCheck, columns]);
+
+  // Continuous edge scroll — works for both mouse and touch drags
+  const isDragging = !!(activeTask || activeColumn);
+  useEdgeScroll(scrollContainerRef, isDragging);
 
   // Update columns when server data changes (via realtime refresh)
   const serverKey = useMemo(
@@ -198,7 +348,8 @@ export function KanbanBoard({
   }
 
   // Deferred sync: wait for cooldown to expire after rapid moves
-  const needsDeferredSync = serverKey !== lastServerKey && !activeTask && !activeColumn && pendingOps === 0 && withinCooldown;
+  const needsDeferredSync =
+    serverKey !== lastServerKey && !activeTask && !activeColumn && pendingOps === 0 && withinCooldown;
   useEffect(() => {
     if (!needsDeferredSync) return;
     const remaining = MOVE_COOLDOWN_MS - (Date.now() - lastMoveTimeRef.current);
@@ -216,13 +367,7 @@ export function KanbanBoard({
 
   // Count archived tasks across all columns
   const archivedCount = useMemo(
-    () =>
-      columns.reduce(
-        (acc, col) =>
-          acc +
-          col.tasks.filter((t) => t.archived).length,
-        0
-      ),
+    () => columns.reduce((acc, col) => acc + col.tasks.filter((t) => t.archived).length, 0),
     [columns]
   );
 
@@ -230,120 +375,92 @@ export function KanbanBoard({
   // Optimistic operation callbacks (exposed via context)
   // ────────────────────────────────────────────────────
 
-  const optimisticCreateTask = useCallback(
-    (columnId: string, tempTask: BoardTaskWithAssignee) => {
-      const prev = columnsRef.current;
-      setColumns((cols) => {
-        const next = cols.map((col) =>
-          col.id === columnId
-            ? { ...col, tasks: [...col.tasks, tempTask] }
-            : col
-        );
-        columnsRef.current = next;
-        return next;
-      });
-      return () => {
-        setColumns(prev);
-        columnsRef.current = prev;
-      };
-    },
-    []
-  );
+  const optimisticCreateTask = useCallback((columnId: string, tempTask: BoardTaskWithAssignee) => {
+    const prev = columnsRef.current;
+    setColumns((cols) => {
+      const next = cols.map((col) => (col.id === columnId ? { ...col, tasks: [...col.tasks, tempTask] } : col));
+      columnsRef.current = next;
+      return next;
+    });
+    return () => {
+      setColumns(prev);
+      columnsRef.current = prev;
+    };
+  }, []);
 
-  const optimisticDeleteTask = useCallback(
-    (taskId: string, columnId: string) => {
-      const prev = columnsRef.current;
-      setColumns((cols) => {
-        const next = cols.map((col) =>
-          col.id === columnId
-            ? { ...col, tasks: col.tasks.filter((t) => t.id !== taskId) }
-            : col
-        );
-        columnsRef.current = next;
-        return next;
-      });
-      return () => {
-        setColumns(prev);
-        columnsRef.current = prev;
-      };
-    },
-    []
-  );
+  const optimisticDeleteTask = useCallback((taskId: string, columnId: string) => {
+    const prev = columnsRef.current;
+    setColumns((cols) => {
+      const next = cols.map((col) =>
+        col.id === columnId ? { ...col, tasks: col.tasks.filter((t) => t.id !== taskId) } : col
+      );
+      columnsRef.current = next;
+      return next;
+    });
+    return () => {
+      setColumns(prev);
+      columnsRef.current = prev;
+    };
+  }, []);
 
-  const optimisticCreateColumn = useCallback(
-    (tempColumn: BoardColumnWithTasks) => {
-      const prev = columnsRef.current;
-      setColumns((cols) => {
-        const next = [...cols, tempColumn];
-        columnsRef.current = next;
-        return next;
-      });
-      return () => {
-        setColumns(prev);
-        columnsRef.current = prev;
-      };
-    },
-    []
-  );
+  const optimisticCreateColumn = useCallback((tempColumn: BoardColumnWithTasks) => {
+    const prev = columnsRef.current;
+    setColumns((cols) => {
+      const next = [...cols, tempColumn];
+      columnsRef.current = next;
+      return next;
+    });
+    return () => {
+      setColumns(prev);
+      columnsRef.current = prev;
+    };
+  }, []);
 
-  const optimisticDeleteColumn = useCallback(
-    (columnId: string) => {
-      const prev = columnsRef.current;
-      setColumns((cols) => {
-        const next = cols.filter((c) => c.id !== columnId);
-        columnsRef.current = next;
-        return next;
-      });
-      return () => {
-        setColumns(prev);
-        columnsRef.current = prev;
-      };
-    },
-    []
-  );
+  const optimisticDeleteColumn = useCallback((columnId: string) => {
+    const prev = columnsRef.current;
+    setColumns((cols) => {
+      const next = cols.filter((c) => c.id !== columnId);
+      columnsRef.current = next;
+      return next;
+    });
+    return () => {
+      setColumns(prev);
+      columnsRef.current = prev;
+    };
+  }, []);
 
-  const optimisticUpdateColumn = useCallback(
-    (columnId: string, updates: Partial<BoardColumnType>) => {
-      const prev = columnsRef.current;
-      setColumns((cols) => {
-        const next = cols.map((col) =>
-          col.id === columnId ? { ...col, ...updates } : col
-        );
-        columnsRef.current = next;
-        return next;
-      });
-      return () => {
-        setColumns(prev);
-        columnsRef.current = prev;
-      };
-    },
-    []
-  );
+  const optimisticUpdateColumn = useCallback((columnId: string, updates: Partial<BoardColumnType>) => {
+    const prev = columnsRef.current;
+    setColumns((cols) => {
+      const next = cols.map((col) => (col.id === columnId ? { ...col, ...updates } : col));
+      columnsRef.current = next;
+      return next;
+    });
+    return () => {
+      setColumns(prev);
+      columnsRef.current = prev;
+    };
+  }, []);
 
-  const optimisticArchiveColumnTasks = useCallback(
-    (columnId: string) => {
-      const prev = columnsRef.current;
-      setColumns((cols) => {
-        const next = cols.map((col) =>
-          col.id === columnId
-            ? {
-                ...col,
-                tasks: col.tasks.map((t) =>
-                  t.archived ? t : { ...t, archived: true }
-                ),
-              }
-            : col
-        );
-        columnsRef.current = next;
-        return next;
-      });
-      return () => {
-        setColumns(prev);
-        columnsRef.current = prev;
-      };
-    },
-    []
-  );
+  const optimisticArchiveColumnTasks = useCallback((columnId: string) => {
+    const prev = columnsRef.current;
+    setColumns((cols) => {
+      const next = cols.map((col) =>
+        col.id === columnId
+          ? {
+              ...col,
+              tasks: col.tasks.map((t) => (t.archived ? t : { ...t, archived: true })),
+            }
+          : col
+      );
+      columnsRef.current = next;
+      return next;
+    });
+    return () => {
+      setColumns(prev);
+      columnsRef.current = prev;
+    };
+  }, []);
 
   const incrementPendingOps = useCallback(() => {
     setPendingOps((n) => n + 1);
@@ -394,26 +511,20 @@ export function KanbanBoard({
 
         // Assignee filter
         if (assigneeFilter === "unassigned" && task.assignee_id) return false;
-        if (
-          assigneeFilter !== "all" &&
-          assigneeFilter !== "unassigned" &&
-          task.assignee_id !== assigneeFilter
-        )
+        if (assigneeFilter !== "all" && assigneeFilter !== "unassigned" && task.assignee_id !== assigneeFilter)
           return false;
 
         // Label filter (task must have ALL selected labels)
         if (labelFilter.length > 0) {
           const taskLabelIds = task.labels.map((l) => l.id);
-          if (!labelFilter.every((id) => taskLabelIds.includes(id)))
-            return false;
+          if (!labelFilter.every((id) => taskLabelIds.includes(id))) return false;
         }
 
         // Due date filter
         if (dueDateFilter !== "all" && task.due_date) {
           const status = getDueDateStatus(task.due_date);
           if (dueDateFilter === "overdue" && status !== "overdue") return false;
-          if (dueDateFilter === "due_soon" && status !== "due_soon")
-            return false;
+          if (dueDateFilter === "due_soon" && status !== "due_soon") return false;
         } else if (dueDateFilter !== "all" && !task.due_date) {
           return false;
         }
@@ -432,41 +543,42 @@ export function KanbanBoard({
     showArchived,
   ]);
 
-  const sensors = useSensors(
-    useSensor(MouseSensor, {
-      activationConstraint: { distance: 8 },
-    }),
-    useSensor(TouchSensor, {
-      activationConstraint: { delay: 200, tolerance: 5 },
-    }),
-    useSensor(KeyboardSensor)
-  );
+  // Sensor configuration
+  // MouseSensor: 8px distance to avoid accidental drags from clicks
+  // TouchSensor: 200ms delay to distinguish drag from scroll, with 25px tolerance
+  //   to accommodate natural finger drift on mobile touch screens (8px was too tight
+  //   and caused immediate cancellation on most devices)
+  const mouseSensor = useSensor(MouseSensor, {
+    activationConstraint: { distance: 8 },
+  });
+  const touchSensor = useSensor(TouchSensor, {
+    activationConstraint: { delay: 200, tolerance: 25 },
+  });
+  const keyboardSensor = useSensor(KeyboardSensor);
+  const sensors = useSensors(mouseSensor, touchSensor, keyboardSensor);
 
-  const handleDragStart = useCallback(
-    (event: DragStartEvent) => {
-      const { active } = event;
-      const data = active.data.current;
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    const { active } = event;
+    const data = active.data.current;
 
-      // Snapshot columns so we can revert immediately if drag is cancelled
-      dragStartColumnsRef.current = columnsRef.current;
+    // Snapshot columns so we can revert immediately if drag is cancelled
+    dragStartColumnsRef.current = columnsRef.current;
 
-      if (data?.type === "column") {
-        const col = columnsRef.current.find((c) => c.id === data.columnId);
-        if (col) setActiveColumn(col);
-      } else {
-        const colId = (data?.columnId as string) ?? null;
-        // Look up the task from columns state (sortableData no longer carries it)
-        if (colId) {
-          const col = columnsRef.current.find((c) => c.id === colId);
-          const task = col?.tasks.find((t) => t.id === active.id);
-          if (task) setActiveTask(task);
-        }
-        dragSourceColumnRef.current = colId;
-        dragCurrentColumnRef.current = colId;
+    if (data?.type === "column") {
+      const col = columnsRef.current.find((c) => c.id === data.columnId);
+      if (col) setActiveColumn(col);
+    } else {
+      const colId = (data?.columnId as string) ?? null;
+      // Look up the task from columns state (sortableData no longer carries it)
+      if (colId) {
+        const col = columnsRef.current.find((c) => c.id === colId);
+        const task = col?.tasks.find((t) => t.id === active.id);
+        if (task) setActiveTask(task);
       }
-    },
-    []
-  );
+      dragSourceColumnRef.current = colId;
+      dragCurrentColumnRef.current = colId;
+    }
+  }, []);
 
   const handleDragOver = useCallback(
     (event: DragOverEvent) => {
@@ -476,10 +588,6 @@ export function KanbanBoard({
       const activeData = active.data.current;
       const overData = over.data.current;
       if (!activeData || activeData.type !== "task") return;
-
-      // Use our ref for the current column (never mutate active.data)
-      const activeColumnId = dragCurrentColumnRef.current;
-      if (!activeColumnId) return;
 
       // Determine target column
       let overColumnId: string;
@@ -496,14 +604,21 @@ export function KanbanBoard({
         }
       }
 
-      if (activeColumnId === overColumnId) return;
+      // Always update column highlight — even for same-column hover
+      setDragOverColumnId(overColumnId);
 
-      // Skip if we already moved the task to this column
-      if (overColumnId === lastOverColumnRef.current) return;
-      lastOverColumnRef.current = overColumnId;
+      // Use our ref for the current column (never mutate active.data)
+      const activeColumnId = dragCurrentColumnRef.current;
+      if (!activeColumnId) return;
+
+      if (activeColumnId === overColumnId) return;
 
       // Update our tracking ref (replaces mutating active.data.current)
       dragCurrentColumnRef.current = overColumnId;
+
+      // Update overlay with target column name for visual feedback
+      const targetCol = columnsRef.current.find((c) => c.id === overColumnId);
+      setDragTargetColumnName(targetCol?.title ?? null);
 
       // Move task between columns optimistically
       setColumns((prev) => {
@@ -528,9 +643,7 @@ export function KanbanBoard({
           if (col.id === overColumnId) {
             let insertIndex = col.tasks.length;
             if (overData?.type === "task") {
-              const overTaskIndex = col.tasks.findIndex(
-                (t) => t.id === over.id
-              );
+              const overTaskIndex = col.tasks.findIndex((t) => t.id === over.id);
               if (overTaskIndex !== -1) insertIndex = overTaskIndex;
             }
             const newTasks = [...col.tasks];
@@ -555,11 +668,12 @@ export function KanbanBoard({
       const activeData = active.data.current;
       const currentColumns = columnsRef.current;
 
-      lastOverColumnRef.current = null;
-
       // Column drag end
       if (activeData?.type === "column") {
         setActiveColumn(null);
+        setDragOverColumnId(null);
+        dragCurrentColumnRef.current = null;
+        dragSourceColumnRef.current = null;
         if (!over) {
           dragStartColumnsRef.current = null;
           return;
@@ -595,12 +709,15 @@ export function KanbanBoard({
 
       // Task drag end — read current column from our ref (not active.data)
       setActiveTask(null);
+      setDragTargetColumnName(null);
+      setDragOverColumnId(null);
 
       const currentColumnId = dragCurrentColumnRef.current;
       const movedBetweenColumns = dragSourceColumnRef.current !== currentColumnId;
 
       // Clean up refs
       dragCurrentColumnRef.current = null;
+      dragSourceColumnRef.current = null;
 
       // Dropped on nothing — revert to pre-drag state immediately
       if (!over || !activeData || activeData.type !== "task") {
@@ -646,9 +763,7 @@ export function KanbanBoard({
       // Reorder the task list optimistically (handles same-column reorder)
       const reordered = arrayMove(col.tasks, activeIndex, overIndex);
       setColumns((prev) => {
-        const next = prev.map((c) =>
-          c.id === activeColumnId ? { ...c, tasks: reordered } : c
-        );
+        const next = prev.map((c) => (c.id === activeColumnId ? { ...c, tasks: reordered } : c));
         columnsRef.current = next;
         return next;
       });
@@ -656,28 +771,19 @@ export function KanbanBoard({
       // Calculate position based on the reordered array
       const taskIndex = overIndex;
       let newPosition: number;
-      if (reordered.length === 1) {
+      if (reordered.length <= 1) {
         newPosition = 0;
       } else if (taskIndex === 0) {
         newPosition = reordered[1].position - POSITION_GAP;
       } else if (taskIndex === reordered.length - 1) {
         newPosition = reordered[taskIndex - 1].position + POSITION_GAP;
       } else {
-        newPosition = Math.round(
-          (reordered[taskIndex - 1].position +
-            reordered[taskIndex + 1].position) /
-            2
-        );
+        newPosition = Math.round((reordered[taskIndex - 1].position + reordered[taskIndex + 1].position) / 2);
       }
 
       setPendingOps((n) => n + 1);
       try {
-        await moveBoardTask(
-          String(active.id),
-          ideaId,
-          activeColumnId,
-          newPosition
-        );
+        await moveBoardTask(String(active.id), ideaId, activeColumnId, newPosition);
       } catch {
         toast.error("Failed to move task");
         setLastServerKey(""); // force re-sync when pendingOps reaches 0
@@ -689,10 +795,53 @@ export function KanbanBoard({
     [ideaId]
   );
 
+  const handleDragCancel = useCallback(() => {
+    // Revert to pre-drag state
+    if (dragStartColumnsRef.current) {
+      const snapshot = dragStartColumnsRef.current;
+      setColumns(snapshot);
+      columnsRef.current = snapshot;
+    }
+    setActiveTask(null);
+    setActiveColumn(null);
+    setDragTargetColumnName(null);
+    setDragOverColumnId(null);
+    dragCurrentColumnRef.current = null;
+    dragSourceColumnRef.current = null;
+    dragStartColumnsRef.current = null;
+  }, []);
+
+  // Detect when the target task exists but is filtered out
+  useEffect(() => {
+    if (!autoOpenTaskId) return;
+    const existsInFull = columns.some((col) =>
+      col.tasks.some((t) => t.id === autoOpenTaskId)
+    );
+    if (!existsInFull) return; // Task doesn't exist on this board at all
+    const visibleInFiltered = filteredColumns.some((col) =>
+      col.tasks.some((t) => t.id === autoOpenTaskId)
+    );
+    if (!visibleInFiltered) {
+      toast.info("The linked task is hidden by current filters", {
+        action: {
+          label: "Clear filters",
+          onClick: () => {
+            setSearchQuery("");
+            setAssigneeFilter("all");
+            setLabelFilter([]);
+            setDueDateFilter("all");
+            setShowArchived(true);
+          },
+        },
+      });
+    }
+  }, [autoOpenTaskId, columns, filteredColumns]);
+
   const columnIds = useMemo(() => columns.map((c) => c.id), [columns]);
 
   return (
     <BoardOpsContext.Provider value={boardOps}>
+    <TaskAutoOpenContext.Provider value={autoOpenCtx}>
     <div className="flex min-h-0 flex-1 flex-col">
       <BoardToolbar
         searchQuery={searchQuery}
@@ -712,23 +861,27 @@ export function KanbanBoard({
         ideaId={ideaId}
         ideaDescription={ideaDescription}
         currentUserId={currentUserId}
-        aiEnabled={aiEnabled}
+        hasApiKey={hasApiKey}
         botProfiles={botProfiles}
-        aiCredits={aiCredits}
+        isReadOnly={isReadOnly}
       />
       <DndContext
-        sensors={sensors}
+        sensors={isReadOnly ? [] : sensors}
         collisionDetection={multiContainerCollision}
         measuring={layoutMeasuring}
-        onDragStart={handleDragStart}
-        onDragOver={handleDragOver}
-        onDragEnd={handleDragEnd}
+        autoScroll={false}
+        onDragStart={isReadOnly ? undefined : handleDragStart}
+        onDragOver={isReadOnly ? undefined : handleDragOver}
+        onDragEnd={isReadOnly ? undefined : handleDragEnd}
+        onDragCancel={isReadOnly ? undefined : handleDragCancel}
       >
         <div className="relative min-h-0 flex-1">
           <div
             ref={scrollContainerRef}
             onScroll={handleScrollCheck}
-            className="flex h-full items-start gap-4 overflow-x-auto pb-4 snap-x snap-mandatory sm:snap-none"
+            className={`flex h-full items-start gap-4 overflow-x-auto pb-4 ${
+              activeTask || activeColumn ? "!snap-none" : "snap-x snap-mandatory sm:snap-none"
+            }`}
           >
             <SortableContext
               items={columnIds}
@@ -747,28 +900,32 @@ export function KanbanBoard({
                     checklistItemsByTaskId={checklistItemsByTaskId}
                     highlightQuery={searchQuery}
                     currentUserId={currentUserId}
-                    initialTaskId={initialTaskId}
+                    initialTaskId={autoOpenTaskId}
                     userBots={userBots}
                     coverImageUrls={coverImageUrls}
-                    aiEnabled={aiEnabled}
-                    aiCredits={aiCredits}
+                    hasApiKey={hasApiKey}
                     ideaDescription={ideaDescription}
+                    isReadOnly={isReadOnly}
+                    isDragTarget={dragOverColumnId === filteredCol.id}
                   />
                 );
               })}
             </SortableContext>
-            <AddColumnButton ideaId={ideaId} />
+            {!isReadOnly && <AddColumnButton ideaId={ideaId} />}
           </div>
           {/* Right-edge fade gradient — visible on mobile when more columns exist off-screen */}
           {canScrollRight && (
             <div className="pointer-events-none absolute right-0 top-0 h-full w-8 bg-gradient-to-l from-background to-transparent sm:hidden" />
           )}
         </div>
-        <DragOverlay dropAnimation={null}>
-          <OverlayContent activeTask={activeTask} activeColumn={activeColumn} />
-        </DragOverlay>
+        {!isReadOnly && (
+          <DragOverlay dropAnimation={null}>
+            <OverlayContent activeTask={activeTask} activeColumn={activeColumn} targetColumnName={dragTargetColumnName} />
+          </DragOverlay>
+        )}
       </DndContext>
     </div>
+    </TaskAutoOpenContext.Provider>
     </BoardOpsContext.Provider>
   );
 }

@@ -7,6 +7,17 @@ export const MAX_BIO_LENGTH = 500;
 export const MAX_TAG_LENGTH = 50;
 export const MAX_TAGS = 10;
 export const MAX_LABEL_NAME_LENGTH = 50;
+export const MAX_IDEA_ATTACHMENTS = 10;
+export const MAX_IDEA_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
+export const ALLOWED_IDEA_ATTACHMENT_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/svg+xml",
+  "application/pdf",
+  "text/markdown",
+] as const;
 
 const VALID_LABEL_COLORS = [
   "red", "orange", "amber", "yellow", "lime", "green",
@@ -98,6 +109,36 @@ export function validateLabelName(name: string): string {
   if (!trimmed) throw new ValidationError("Label name is required");
   if (trimmed.length > MAX_LABEL_NAME_LENGTH) {
     throw new ValidationError(`Label name must be ${MAX_LABEL_NAME_LENGTH} characters or less`);
+  }
+  return trimmed;
+}
+
+export const MAX_DISCUSSION_BODY_LENGTH = 10000;
+export const MAX_DISCUSSION_REPLY_LENGTH = 5000;
+
+export function validateDiscussionTitle(title: string): string {
+  const trimmed = title.trim();
+  if (!trimmed) throw new ValidationError("Discussion title is required");
+  if (trimmed.length > MAX_TITLE_LENGTH) {
+    throw new ValidationError(`Discussion title must be ${MAX_TITLE_LENGTH} characters or less`);
+  }
+  return trimmed;
+}
+
+export function validateDiscussionBody(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed) throw new ValidationError("Discussion body is required");
+  if (trimmed.length > MAX_DISCUSSION_BODY_LENGTH) {
+    throw new ValidationError(`Discussion body must be ${MAX_DISCUSSION_BODY_LENGTH} characters or less`);
+  }
+  return trimmed;
+}
+
+export function validateDiscussionReply(content: string): string {
+  const trimmed = content.trim();
+  if (!trimmed) throw new ValidationError("Reply cannot be empty");
+  if (trimmed.length > MAX_DISCUSSION_REPLY_LENGTH) {
+    throw new ValidationError(`Reply must be ${MAX_DISCUSSION_REPLY_LENGTH} characters or less`);
   }
   return trimmed;
 }

@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { Users, Pencil, LayoutDashboard, MoreHorizontal, Trash2, Sparkles } from "lucide-react";
+import { Users, Pencil, LayoutDashboard, MessageSquare, Trash2, Sparkles } from "lucide-react";
+import { requireAuth } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -13,19 +14,16 @@ import { CommentThread } from "@/components/comments/comment-thread";
 import { IdeaDetailRealtime } from "@/components/ideas/idea-detail-realtime";
 import { DeleteIdeaButton } from "@/components/ideas/delete-idea-button";
 import { EnhanceIdeaButton } from "@/components/ideas/enhance-idea-button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { IdeaActionsMenu } from "@/components/ideas/idea-actions-menu";
 import { AddCollaboratorPopover } from "@/components/ideas/add-collaborator-popover";
 import { RemoveCollaboratorButton } from "@/components/ideas/remove-collaborator-button";
 import { InlineIdeaHeader } from "@/components/ideas/inline-idea-header";
 import { InlineIdeaBody } from "@/components/ideas/inline-idea-body";
 import { InlineIdeaTags } from "@/components/ideas/inline-idea-tags";
-import { formatRelativeTime } from "@/lib/utils";
-import type { CommentWithAuthor, CollaboratorWithUser, BotProfile, AiCredits } from "@/types";
+import { IdeaAttachmentsSection } from "@/components/ideas/idea-attachments-section";
+import { formatRelativeTime, stripMarkdownForMeta } from "@/lib/utils";
+import { PendingRequests } from "@/components/ideas/pending-requests";
+import type { CommentWithAuthor, CollaboratorWithUser, CollaborationRequestWithRequester, BotProfile, User } from "@/types";
 import type { Metadata } from "next";
 
 export const maxDuration = 120;
@@ -39,25 +37,46 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const supabase = await createClient();
   const { data: idea } = await supabase
     .from("ideas")
-    .select("title, description")
+    .select("title, description, visibility")
     .eq("id", id)
     .single();
 
   if (!idea) return { title: "Idea Not Found" };
 
+  if (idea.visibility === "private") {
+    return {
+      title: "Private Idea",
+      description: "Sign in to VibeCodes to view this idea.",
+      openGraph: {
+        title: "Private Idea on VibeCodes",
+        description: "Sign in to VibeCodes to view this idea.",
+      },
+    };
+  }
+
+  const description = idea.description
+    ? stripMarkdownForMeta(idea.description)
+    : "An idea on VibeCodes";
+
   return {
-    title: `${idea.title} - VibeCodes`,
-    description: idea.description.substring(0, 160),
+    title: idea.title,
+    description,
+    openGraph: {
+      title: idea.title,
+      description,
+      type: "article",
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: idea.title,
+      description,
+    },
   };
 }
 
 export default async function IdeaDetailPage({ params }: PageProps) {
   const { id } = await params;
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { user, supabase } = await requireAuth();
 
   // Fetch idea with author
   const { data: idea } = await supabase
@@ -68,12 +87,54 @@ export default async function IdeaDetailPage({ params }: PageProps) {
 
   if (!idea) notFound();
 
-  // Fetch comments with authors (including replies)
-  const { data: rawComments } = await supabase
-    .from("comments")
-    .select("*, author:users!comments_author_id_fkey(*)")
-    .eq("idea_id", id)
-    .order("created_at", { ascending: true });
+  // Phase 2: Run all independent queries in parallel
+  const [
+    { data: rawComments },
+    { data: collaborators },
+    { data: vote },
+    { data: collab },
+    { data: profile },
+    { data: bots },
+  ] = await Promise.all([
+    supabase
+      .from("comments")
+      .select("*, author:users!comments_author_id_fkey(*)")
+      .eq("idea_id", id)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("collaborators")
+      .select("*, user:users!collaborators_user_id_fkey(*)")
+      .eq("idea_id", id),
+    supabase
+      .from("votes")
+      .select("id")
+      .eq("idea_id", id)
+      .eq("user_id", user.id)
+      .maybeSingle(),
+    supabase
+      .from("collaborators")
+      .select("id")
+      .eq("idea_id", id)
+      .eq("user_id", user.id)
+      .maybeSingle(),
+    supabase
+      .from("users")
+      .select("is_admin, encrypted_anthropic_key")
+      .eq("id", user.id)
+      .single(),
+    supabase
+      .from("bot_profiles")
+      .select("*")
+      .eq("owner_id", user.id)
+      .eq("is_active", true)
+      .order("created_at", { ascending: true }),
+  ]);
+
+  const hasVoted = !!vote;
+  const isCollaborator = !!collab;
+  const isAdmin = profile?.is_admin ?? false;
+  const userHasApiKey = !!profile?.encrypted_anthropic_key;
+  const userBots = (bots ?? []) as BotProfile[];
 
   // Build threaded comments
   const commentMap = new Map<string, CommentWithAuthor>();
@@ -98,80 +159,42 @@ export default async function IdeaDetailPage({ params }: PageProps) {
     }
   });
 
-  // Fetch collaborators
-  const { data: collaborators } = await supabase
-    .from("collaborators")
-    .select("*, user:users!collaborators_user_id_fkey(*)")
-    .eq("idea_id", id);
-
-  // Check user vote
-  let hasVoted = false;
-  let isCollaborator = false;
-  if (user) {
-    const { data: vote } = await supabase
-      .from("votes")
-      .select("id")
-      .eq("idea_id", id)
-      .eq("user_id", user.id)
-      .maybeSingle();
-    hasVoted = !!vote;
-
-    const { data: collab } = await supabase
-      .from("collaborators")
-      .select("id")
-      .eq("idea_id", id)
-      .eq("user_id", user.id)
-      .maybeSingle();
-    isCollaborator = !!collab;
-  }
-
-  // Check if user is admin and has AI access
-  let isAdmin = false;
-  let aiEnabled = false;
-  let aiCredits: AiCredits | null = null;
-  if (user) {
-    const { data: profile } = await supabase
-      .from("users")
-      .select("is_admin, ai_enabled, ai_daily_limit, encrypted_anthropic_key")
-      .eq("id", user.id)
-      .single();
-    isAdmin = profile?.is_admin ?? false;
-    aiEnabled = profile?.ai_enabled ?? false;
-
-    if (aiEnabled && profile) {
-      const isByok = !!profile.encrypted_anthropic_key;
-      if (isByok) {
-        aiCredits = { used: 0, limit: null, remaining: null, isByok: true };
-      } else {
-        const todayUTC = new Date();
-        todayUTC.setUTCHours(0, 0, 0, 0);
-        const { count } = await supabase
-          .from("ai_usage_log")
-          .select("*", { count: "exact", head: true })
-          .eq("user_id", user.id)
-          .eq("key_type", "platform")
-          .gte("created_at", todayUTC.toISOString());
-        const used = count ?? 0;
-        const limit = profile.ai_daily_limit;
-        aiCredits = { used, limit, remaining: Math.max(0, limit - used), isByok: false };
-      }
-    }
-  }
+  // Phase 3: Conditional queries that depend on Phase 2 results
+  const [pendingRequestId, pendingRequests] = await Promise.all([
+    (!isCollaborator && user.id !== idea.author_id)
+      ? supabase
+          .from("collaboration_requests")
+          .select("id")
+          .eq("idea_id", id)
+          .eq("requester_id", user.id)
+          .eq("status", "pending")
+          .maybeSingle()
+          .then(({ data }) => data?.id ?? null)
+      : Promise.resolve(null),
+    (user.id === idea.author_id)
+      ? supabase
+          .from("collaboration_requests")
+          .select("*, requester:users!collaboration_requests_requester_id_fkey(*)")
+          .eq("idea_id", id)
+          .eq("status", "pending")
+          .order("created_at", { ascending: true })
+          .then(({ data }) => (data ?? []) as unknown as CollaborationRequestWithRequester[])
+      : Promise.resolve([] as CollaborationRequestWithRequester[]),
+  ]);
 
   const isAuthor = user?.id === idea.author_id;
   const canDelete = isAuthor || isAdmin;
+  // Build team members list for @mention autocomplete (author + collaborators, deduplicated)
+  const teamMembersMap = new Map<string, User>();
+  const ideaAuthor = idea.author as unknown as User;
+  teamMembersMap.set(ideaAuthor.id, ideaAuthor);
+  (collaborators as unknown as CollaboratorWithUser[])?.forEach((collab) => {
+    if (!teamMembersMap.has(collab.user_id)) {
+      teamMembersMap.set(collab.user_id, collab.user);
+    }
+  });
+  const teamMembers = Array.from(teamMembersMap.values());
 
-  // Fetch user's bot profiles for AI persona selector
-  let userBots: BotProfile[] = [];
-  if (user && aiEnabled) {
-    const { data: bots } = await supabase
-      .from("bot_profiles")
-      .select("*")
-      .eq("owner_id", user.id)
-      .eq("is_active", true)
-      .order("created_at", { ascending: true });
-    userBots = (bots ?? []) as BotProfile[];
-  }
   const author = idea.author as unknown as { full_name: string | null; avatar_url: string | null; id: string };
   const authorInitials =
     author.full_name
@@ -229,15 +252,29 @@ export default async function IdeaDetailPage({ params }: PageProps) {
             ideaId={idea.id}
             isCollaborator={isCollaborator}
             isAuthor={isAuthor}
+            pendingRequestId={pendingRequestId}
           />
         )}
-        {(isAuthor || isCollaborator) && (
-          <Link href={`/ideas/${idea.id}/board`}>
-            <Button variant="outline" size="sm" className="gap-2">
-              <LayoutDashboard className="h-4 w-4" />
-              Board
-            </Button>
-          </Link>
+        {(isAuthor || isCollaborator || idea.visibility === "public") && (
+          <>
+            <Link href={`/ideas/${idea.id}/board`}>
+              <Button variant="outline" size="sm" className="gap-2">
+                <LayoutDashboard className="h-4 w-4" />
+                Board
+              </Button>
+            </Link>
+            <Link href={`/ideas/${idea.id}/discussions`}>
+              <Button variant="outline" size="sm" className="gap-2">
+                <MessageSquare className="h-4 w-4" />
+                Discussions
+                {idea.discussion_count > 0 && (
+                  <span className="rounded-full bg-accent px-1.5 py-0.5 text-[10px] leading-none">
+                    {idea.discussion_count}
+                  </span>
+                )}
+              </Button>
+            </Link>
+          </>
         )}
         {/* Desktop: show Edit, Enhance, Delete inline */}
         {isAuthor && (
@@ -248,14 +285,14 @@ export default async function IdeaDetailPage({ params }: PageProps) {
             </Button>
           </Link>
         )}
-        {isAuthor && aiEnabled && (
+        {isAuthor && (
           <span className="hidden sm:inline-flex">
             <EnhanceIdeaButton
               ideaId={idea.id}
               ideaTitle={idea.title}
               currentDescription={idea.description}
               bots={userBots}
-              aiCredits={aiCredits}
+              disabled={!userHasApiKey}
             />
           </span>
         )}
@@ -266,41 +303,15 @@ export default async function IdeaDetailPage({ params }: PageProps) {
         )}
         {/* Mobile: "More" dropdown for Edit, Enhance, Delete */}
         {(isAuthor || canDelete) && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2 sm:hidden">
-                <MoreHorizontal className="h-4 w-4" />
-                More
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              {isAuthor && (
-                <DropdownMenuItem asChild>
-                  <Link href={`/ideas/${idea.id}/edit`} className="flex items-center gap-2">
-                    <Pencil className="h-4 w-4" />
-                    Edit
-                  </Link>
-                </DropdownMenuItem>
-              )}
-              {isAuthor && aiEnabled && (
-                <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="p-0">
-                  <EnhanceIdeaButton
-                    ideaId={idea.id}
-                    ideaTitle={idea.title}
-                    currentDescription={idea.description}
-                    bots={userBots}
-                    aiCredits={aiCredits}
-                    variant="dropdown"
-                  />
-                </DropdownMenuItem>
-              )}
-              {canDelete && (
-                <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="p-0">
-                  <DeleteIdeaButton ideaId={idea.id} variant="dropdown" />
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <IdeaActionsMenu
+            ideaId={idea.id}
+            ideaTitle={idea.title}
+            currentDescription={idea.description}
+            isAuthor={isAuthor}
+            canDelete={canDelete}
+            hasApiKey={userHasApiKey}
+            bots={userBots}
+          />
         )}
       </div>
 
@@ -357,6 +368,7 @@ export default async function IdeaDetailPage({ params }: PageProps) {
               );
             })}
           </div>
+          {isAuthor && <PendingRequests ideaId={idea.id} requests={pendingRequests} />}
         </div>
       )}
 
@@ -369,6 +381,15 @@ export default async function IdeaDetailPage({ params }: PageProps) {
         isAuthor={isAuthor}
       />
 
+      {/* Attachments — team members always see it; others see it if attachments exist (component handles this) */}
+      <Separator className="my-6" />
+      <IdeaAttachmentsSection
+        ideaId={idea.id}
+        currentUserId={user?.id ?? ""}
+        isAuthor={isAuthor}
+        isTeamMember={isAuthor || isCollaborator}
+      />
+
       {/* Comments */}
       <Separator className="my-6" />
       <CommentThread
@@ -376,6 +397,8 @@ export default async function IdeaDetailPage({ params }: PageProps) {
         ideaId={idea.id}
         ideaAuthorId={idea.author_id}
         currentUserId={user?.id}
+        userBotIds={userBots.map((b) => b.id)}
+        teamMembers={teamMembers}
       />
     </div>
   );

@@ -1,10 +1,12 @@
-import { redirect, notFound } from "next/navigation";
+import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
+import { requireAuth } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { initializeBoardColumns } from "@/actions/board";
 import { KanbanBoard } from "@/components/board/kanban-board";
 import { BoardRealtime } from "@/components/board/board-realtime";
+import { GuestBoardBanner } from "@/components/board/guest-board-banner";
 import { Button } from "@/components/ui/button";
 import type {
   BoardColumnWithTasks,
@@ -13,7 +15,6 @@ import type {
   BoardChecklistItem,
   User,
   BotProfile,
-  AiCredits,
 } from "@/types";
 import type { Metadata } from "next";
 
@@ -29,32 +30,47 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const supabase = await createClient();
   const { data: idea } = await supabase
     .from("ideas")
-    .select("title")
+    .select("title, visibility")
     .eq("id", id)
     .single();
 
-  if (!idea) return { title: "Board - Not Found" };
+  if (!idea) return { title: "Board Not Found" };
+
+  if (idea.visibility === "private") {
+    return {
+      title: "Private Board",
+      description: "Sign in to VibeCodes to view this board.",
+      robots: { index: false, follow: false },
+    };
+  }
+
+  const ogTitle = `${idea.title} — Board`;
+  const ogDescription = `Kanban board for ${idea.title} — plan, track, and ship on VibeCodes`;
 
   return {
-    title: `Board - ${idea.title} - VibeCodes`,
+    title: `${idea.title} — Board`,
+    description: ogDescription,
+    openGraph: {
+      title: ogTitle,
+      description: ogDescription,
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: ogTitle,
+      description: ogDescription,
+    },
   };
 }
 
 export default async function BoardPage({ params, searchParams }: PageProps) {
   const { id } = await params;
   const { taskId: initialTaskId } = await searchParams;
-  const supabase = await createClient();
+  const { user, supabase } = await requireAuth();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/login");
-
-  // Fetch idea
+  // Fetch idea (include visibility for access control)
   const { data: idea } = await supabase
     .from("ideas")
-    .select("id, title, description, author_id")
+    .select("id, title, description, author_id, visibility")
     .eq("id", id)
     .single();
 
@@ -73,12 +89,31 @@ export default async function BoardPage({ params, searchParams }: PageProps) {
     isCollaborator = !!collab;
   }
 
-  if (!isAuthor && !isCollaborator) {
-    redirect(`/ideas/${id}`);
+  const isTeamMember = isAuthor || isCollaborator;
+  const isReadOnly = !isTeamMember;
+
+  // Non-team-members can only view public idea boards
+  if (isReadOnly && idea.visibility !== "public") {
+    notFound();
   }
 
-  // Lazy-create default columns on first visit
-  await initializeBoardColumns(id);
+  // Check if guest has a pending collaboration request
+  let hasRequested = false;
+  if (isReadOnly) {
+    const { data: pendingRequest } = await supabase
+      .from("collaboration_requests")
+      .select("id")
+      .eq("idea_id", id)
+      .eq("requester_id", user.id)
+      .eq("status", "pending")
+      .maybeSingle();
+    hasRequested = !!pendingRequest;
+  }
+
+  // Only initialize columns for team members (guests see what exists)
+  if (isTeamMember) {
+    await initializeBoardColumns(id);
+  }
 
   // Phase 2: Parallel fetch of all board data
   const [
@@ -91,11 +126,7 @@ export default async function BoardPage({ params, searchParams }: PageProps) {
     { data: rawUserBots },
     { data: userProfile },
   ] = await Promise.all([
-    supabase
-      .from("board_columns")
-      .select("*")
-      .eq("idea_id", id)
-      .order("position", { ascending: true }),
+    supabase.from("board_columns").select("*").eq("idea_id", id).order("position", { ascending: true }),
     supabase
       .from("board_tasks")
       .select("*, assignee:users!board_tasks_assignee_id_fkey(*)")
@@ -120,16 +151,21 @@ export default async function BoardPage({ params, searchParams }: PageProps) {
       .select("*")
       .eq("id", idea.author_id)
       .single(),
-    supabase
-      .from("bot_profiles")
-      .select("*")
-      .eq("owner_id", user.id)
-      .eq("is_active", true),
-    supabase
-      .from("users")
-      .select("ai_enabled, ai_daily_limit, encrypted_anthropic_key")
-      .eq("id", user.id)
-      .single(),
+    // Write-only fetches — skip for read-only guests
+    isTeamMember
+      ? supabase
+          .from("bot_profiles")
+          .select("*")
+          .eq("owner_id", user.id)
+          .eq("is_active", true)
+      : Promise.resolve({ data: null }),
+    isTeamMember
+      ? supabase
+          .from("users")
+          .select("encrypted_anthropic_key")
+          .eq("id", user.id)
+          .single()
+      : Promise.resolve({ data: null }),
   ]);
 
   // Phase 3: Queries that depend on Phase 2 results
@@ -189,38 +225,13 @@ export default async function BoardPage({ params, searchParams }: PageProps) {
     });
   }
 
-  const aiEnabled = userProfile?.ai_enabled ?? false;
-
-  // Compute AI credits
-  let aiCredits: AiCredits | null = null;
-  if (aiEnabled && userProfile) {
-    const isByok = !!userProfile.encrypted_anthropic_key;
-    if (isByok) {
-      aiCredits = { used: 0, limit: null, remaining: null, isByok: true };
-    } else {
-      const todayUTC = new Date();
-      todayUTC.setUTCHours(0, 0, 0, 0);
-      const { count } = await supabase
-        .from("ai_usage_log")
-        .select("*", { count: "exact", head: true })
-        .eq("user_id", user.id)
-        .eq("key_type", "platform")
-        .gte("created_at", todayUTC.toISOString());
-      const used = count ?? 0;
-      const limit = userProfile.ai_daily_limit;
-      aiCredits = { used, limit, remaining: Math.max(0, limit - used), isByok: false };
-    }
-  }
+  const userHasApiKey = !isReadOnly && !!userProfile?.encrypted_anthropic_key;
 
   // Batch-create signed URLs for cover images (single API call instead of N)
-  const coverPaths = (rawTasks ?? [])
-    .map((t) => t.cover_image_path)
-    .filter((p): p is string => !!p);
+  const coverPaths = (rawTasks ?? []).map((t) => t.cover_image_path).filter((p): p is string => !!p);
   const coverImageUrls: Record<string, string> = {};
   if (coverPaths.length > 0) {
-    const { data: signedUrls } = await supabase.storage
-      .from("task-attachments")
-      .createSignedUrls(coverPaths, 3600);
+    const { data: signedUrls } = await supabase.storage.from("task-attachments").createSignedUrls(coverPaths, 3600);
     if (signedUrls) {
       for (const entry of signedUrls) {
         if (entry.signedUrl && entry.path) {
@@ -257,6 +268,13 @@ export default async function BoardPage({ params, searchParams }: PageProps) {
         <h1 className="text-xl font-bold">{idea.title} — Board</h1>
       </div>
 
+      {/* Guest banner */}
+      {isReadOnly && (
+        <div className="mb-4 shrink-0">
+          <GuestBoardBanner ideaId={id} hasRequested={hasRequested} />
+        </div>
+      )}
+
       {/* Kanban Board */}
       <KanbanBoard
         columns={columns}
@@ -268,10 +286,10 @@ export default async function BoardPage({ params, searchParams }: PageProps) {
         currentUserId={user.id}
         initialTaskId={initialTaskId}
         userBots={userBots}
-        aiEnabled={aiEnabled}
+        hasApiKey={userHasApiKey}
         botProfiles={userBotProfiles}
-        aiCredits={aiCredits}
         coverImageUrls={coverImageUrls}
+        isReadOnly={isReadOnly}
       />
     </div>
   );

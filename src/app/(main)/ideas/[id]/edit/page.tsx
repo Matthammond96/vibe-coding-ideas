@@ -1,5 +1,5 @@
 import { notFound, redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { requireAuth } from "@/lib/auth";
 import { IdeaEditForm } from "@/components/ideas/idea-edit-form";
 import type { Metadata } from "next";
 
@@ -8,18 +8,13 @@ interface PageProps {
 }
 
 export const metadata: Metadata = {
-  title: "Edit Idea - VibeCodes",
+  title: "Edit Idea",
+  robots: { index: false, follow: false },
 };
 
 export default async function EditIdeaPage({ params }: PageProps) {
   const { id } = await params;
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/login");
+  const { user, supabase } = await requireAuth();
 
   const { data: idea } = await supabase
     .from("ideas")
